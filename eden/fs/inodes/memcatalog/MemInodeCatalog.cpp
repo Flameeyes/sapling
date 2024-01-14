@@ -8,6 +8,7 @@
 #include "eden/fs/inodes/memcatalog/MemInodeCatalog.h"
 #include <algorithm>
 #include <utility>
+
 #include "eden/fs/inodes/sqlitecatalog/WindowsFsck.h"
 
 namespace facebook::eden {
@@ -78,7 +79,7 @@ void MemInodeCatalog::saveOverlayDir(
 void MemInodeCatalog::removeOverlayDir(InodeNumber inodeNumber) {
   auto store = store_.wlock();
   auto itr = store->find(inodeNumber);
-  if (itr == store->end() || itr->second.entries_ref()->size() != 0) {
+  if (itr == store->end() || !itr->second.entries_ref()->empty()) {
     throw NonEmptyError("cannot delete non-empty directory");
   }
 
@@ -122,7 +123,7 @@ bool MemInodeCatalog::hasChild(
     PathComponentPiece childName) {
   auto store = store_.rlock();
   auto itr = store->find(parent);
-  if (itr == store->end() || itr->second.entries_ref()->size() == 0) {
+  if (itr == store->end() || itr->second.entries_ref()->empty()) {
     return false;
   }
 
@@ -187,9 +188,16 @@ std::optional<fsck::InodeInfo> MemInodeCatalog::loadInodeInfo(
 InodeNumber MemInodeCatalog::scanLocalChanges(
     FOLLY_MAYBE_UNUSED std::shared_ptr<const EdenConfig> config,
     FOLLY_MAYBE_UNUSED AbsolutePathPiece mountPath,
+    FOLLY_MAYBE_UNUSED bool windowsSymlinksEnabled,
     FOLLY_MAYBE_UNUSED InodeCatalog::LookupCallback& callback) {
 #ifdef _WIN32
-  windowsFsckScanLocalChanges(config, *this, mountPath, callback);
+  windowsFsckScanLocalChanges(
+      config,
+      *this,
+      InodeCatalogType::InMemory,
+      mountPath,
+      windowsSymlinksEnabled,
+      callback);
 #endif
   return InodeNumber{nextInode_.load()};
 }

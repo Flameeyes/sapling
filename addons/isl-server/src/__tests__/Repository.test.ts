@@ -6,9 +6,11 @@
  */
 
 import type {ResolveCommandConflictOutput} from '../Repository';
+import type {ServerPlatform} from '../serverPlatform';
 import type {MergeConflicts, ValidatedRepoInfo} from 'isl/src/types';
 
 import {absolutePathForFileInRepo, extractRepoInfoFromUrl, Repository} from '../Repository';
+import {makeServerSideTracker} from '../analytics/serverSideTracker';
 import * as execa from 'execa';
 import os from 'os';
 import path from 'path';
@@ -26,33 +28,74 @@ jest.mock('../WatchForChanges', () => {
   return {WatchForChanges: MockWatchForChanges};
 });
 
+const mockTracker = makeServerSideTracker(
+  mockLogger,
+  {platformName: 'test'} as ServerPlatform,
+  '0.1',
+  jest.fn(),
+);
+
+function mockExeca(
+  cmds: Array<[RegExp, (() => {stdout: string} | Error) | {stdout: string} | Error]>,
+) {
+  return jest.spyOn(execa, 'default').mockImplementation(((cmd: string, args: Array<string>) => {
+    const argStr = cmd + ' ' + args?.join(' ');
+    const execaOther = {
+      kill: jest.fn(),
+      on: jest.fn((event, cb) => {
+        // immediately call exit cb to teardown timeout
+        if (event === 'exit') {
+          cb();
+        }
+      }),
+    };
+    for (const [regex, output] of cmds) {
+      if (regex.test(argStr)) {
+        let value = output;
+        if (typeof output === 'function') {
+          value = output();
+        }
+        if (value instanceof Error) {
+          throw value;
+        }
+        return {...execaOther, ...value};
+      }
+    }
+    return {...execaOther, stdout: ''};
+  }) as unknown as typeof execa.default);
+}
+
+function processExitError(code: number, message: string): execa.ExecaError {
+  const err = new Error(message) as execa.ExecaError;
+  err.exitCode = code;
+  return err;
+}
+
 describe('Repository', () => {
   it('setting command name', async () => {
-    const spy = jest.spyOn(execa, 'default');
+    const execaSpy = mockExeca([]);
     await Repository.getRepoInfo('slb', mockLogger, '/path/to/cwd');
-    expect(spy).toHaveBeenCalledWith('slb', expect.arrayContaining(['root']), expect.anything());
+    expect(execaSpy).toHaveBeenCalledWith(
+      'slb',
+      expect.arrayContaining(['root']),
+      expect.anything(),
+    );
   });
 
   describe('extracting github repo info', () => {
     let currentMockPathsDefault: string;
     beforeEach(() => {
-      jest.spyOn(execa, 'default').mockImplementation(((cmd: string, args: Array<string>) => {
-        const argStr = cmd + ' ' + args?.join(' ');
-        if (argStr.startsWith('sl config paths.default')) {
-          return {stdout: currentMockPathsDefault};
-        } else if (argStr.startsWith('sl config github.pull_request_domain')) {
-          return {stdout: 'github.com'};
-        } else if (argStr.startsWith('sl root --dotdir')) {
-          return {stdout: '/path/to/myRepo/.sl'};
-        } else if (argStr.startsWith('sl root')) {
-          return {stdout: '/path/to/myRepo'};
-        } else if (argStr.startsWith('gh auth status --hostname gitlab.myCompany.com')) {
-          throw new Error('not authenticated on this hostname');
-        } else if (argStr.startsWith('gh auth status --hostname ghe.myCompany.com')) {
-          return {};
-        }
-        return {stdout: ''};
-      }) as unknown as typeof execa.default);
+      mockExeca([
+        [/^sl config paths.default/, () => ({stdout: currentMockPathsDefault})],
+        [/^sl config github.pull_request_domain/, {stdout: 'github.com'}],
+        [/^sl root --dotdir/, {stdout: '/path/to/myRepo/.sl'}],
+        [/^sl root/, {stdout: '/path/to/myRepo'}],
+        [
+          /^gh auth status --hostname gitlab.myCompany.com/,
+          new Error('not authenticated on this hostname'),
+        ],
+        [/^gh auth status --hostname ghe.myCompany.com/, {stdout: ''}],
+      ]);
     });
 
     it('extracting github repo info', async () => {
@@ -62,7 +105,7 @@ describe('Repository', () => {
         mockLogger,
         '/path/to/cwd',
       )) as ValidatedRepoInfo;
-      const repo = new Repository(info, mockLogger);
+      const repo = new Repository(info, mockLogger, mockTracker);
       expect(repo.info).toEqual({
         type: 'success',
         command: 'sl',
@@ -85,7 +128,7 @@ describe('Repository', () => {
         mockLogger,
         '/path/to/cwd',
       )) as ValidatedRepoInfo;
-      const repo = new Repository(info, mockLogger);
+      const repo = new Repository(info, mockLogger, mockTracker);
       expect(repo.info).toEqual({
         type: 'success',
         command: 'sl',
@@ -108,7 +151,7 @@ describe('Repository', () => {
         mockLogger,
         '/path/to/cwd',
       )) as ValidatedRepoInfo;
-      const repo = new Repository(info, mockLogger);
+      const repo = new Repository(info, mockLogger, mockTracker);
       expect(repo.info).toEqual({
         type: 'success',
         command: 'sl',
@@ -123,26 +166,31 @@ describe('Repository', () => {
     });
   });
 
-  it('extracting repo info', async () => {
-    jest.spyOn(execa, 'default').mockImplementation(((_cmd: string, args: Array<string>) => {
-      const argStr = args?.join(' ');
-      if (argStr.startsWith('config paths.default')) {
-        return {stdout: 'mononoke://0.0.0.0/fbsource'};
-      } else if (argStr.startsWith('config github.pull_request_domain')) {
-        throw new Error('');
-      } else if (argStr.startsWith('root --dotdir')) {
-        return {stdout: '/path/to/myRepo/.sl'};
-      } else if (argStr.startsWith('root')) {
-        return {stdout: '/path/to/myRepo'};
-      }
-      return {stdout: ''};
-    }) as unknown as typeof execa.default);
+  it('applies isl.hold-off-refresh-ms config', async () => {
+    mockExeca([[/^sl config isl\.hold-off-refresh-ms/, {stdout: '12345'}]]);
     const info = (await Repository.getRepoInfo(
       'sl',
       mockLogger,
       '/path/to/cwd',
     )) as ValidatedRepoInfo;
-    const repo = new Repository(info, mockLogger);
+    const repo = new Repository(info, mockLogger, mockTracker);
+    await new Promise(process.nextTick);
+    expect(repo.configHoldOffRefreshMs).toBe(12345);
+  });
+
+  it('extracting repo info', async () => {
+    mockExeca([
+      [/^sl config paths.default/, {stdout: 'mononoke://0.0.0.0/fbsource'}],
+      [/^sl config github.pull_request_domain/, new Error('')],
+      [/^sl root --dotdir/, {stdout: '/path/to/myRepo/.sl'}],
+      [/^sl root/, {stdout: '/path/to/myRepo'}],
+    ]);
+    const info = (await Repository.getRepoInfo(
+      'sl',
+      mockLogger,
+      '/path/to/cwd',
+    )) as ValidatedRepoInfo;
+    const repo = new Repository(info, mockLogger, mockTracker);
     expect(repo.info).toEqual({
       type: 'success',
       command: 'sl',
@@ -155,17 +203,15 @@ describe('Repository', () => {
 
   it('handles missing executables on windows', async () => {
     const osSpy = jest.spyOn(os, 'platform').mockImplementation(() => 'win32');
-    jest.spyOn(execa, 'default').mockImplementation(((_cmd: string, args: Array<string>) => {
-      const argStr = args?.join(' ');
-      if (argStr.startsWith('root')) {
-        const err = new Error(
+    mockExeca([
+      [
+        /^sl root/,
+        processExitError(
+          /* code */ 1,
           `'sl' is not recognized as an internal or external command, operable program or batch file.`,
-        ) as Error & {exitCode: number};
-        err.exitCode = 1;
-        throw err;
-      }
-      return {stdout: ''};
-    }) as unknown as typeof execa.default);
+        ),
+      ],
+    ]);
     const info = (await Repository.getRepoInfo(
       'sl',
       mockLogger,
@@ -279,21 +325,16 @@ ${MARK_OUT}
 
       jest.spyOn(fsUtils, 'exists').mockImplementation(() => Promise.resolve(slMergeDirExists));
 
-      jest.spyOn(execa, 'default').mockImplementation((async (
-        _cmd: string,
-        args: Array<string>,
-        // eslint-disable-next-line require-await
-      ) => {
-        const argStr = args?.join(' ');
-        if (argStr.startsWith('resolve --tool internal:dumpjson --all')) {
-          return {stdout: JSON.stringify(conflictData)};
-        }
-        return {stdout: ''};
-      }) as unknown as typeof execa.default);
+      mockExeca([
+        [
+          /^sl resolve --tool internal:dumpjson --all/,
+          () => ({stdout: JSON.stringify(conflictData)}),
+        ],
+      ]);
     });
 
     it('checks for merge conflicts', async () => {
-      const repo = new Repository(repoInfo, mockLogger);
+      const repo = new Repository(repoInfo, mockLogger, mockTracker);
 
       const onChange = jest.fn();
       repo.onChangeConflictState(onChange);
@@ -321,7 +362,7 @@ ${MARK_OUT}
     });
 
     it('disposes conflict change subscriptions', async () => {
-      const repo = new Repository(repoInfo, mockLogger);
+      const repo = new Repository(repoInfo, mockLogger, mockTracker);
 
       const onChange = jest.fn();
       const subscription = repo.onChangeConflictState(onChange);
@@ -335,7 +376,7 @@ ${MARK_OUT}
     it('sends conflicts right away on subscription if already in conflicts', async () => {
       enterMergeConflict(MOCK_CONFLICT);
 
-      const repo = new Repository(repoInfo, mockLogger);
+      const repo = new Repository(repoInfo, mockLogger, mockTracker);
 
       const onChange = jest.fn();
       repo.onChangeConflictState(onChange);
@@ -357,7 +398,7 @@ ${MARK_OUT}
     });
 
     it('preserves previous conflicts as resolved', async () => {
-      const repo = new Repository(repoInfo, mockLogger);
+      const repo = new Repository(repoInfo, mockLogger, mockTracker);
       const onChange = jest.fn();
       repo.onChangeConflictState(onChange);
 
@@ -394,19 +435,11 @@ ${MARK_OUT}
     });
 
     it('handles errors from `sl resolve`', async () => {
-      jest.spyOn(execa, 'default').mockImplementation((async (
-        _cmd: string,
-        args: Array<string>,
-        // eslint-disable-next-line require-await
-      ) => {
-        const argStr = args?.join(' ');
-        if (argStr.startsWith('resolve --tool internal:dumpjson --all')) {
-          throw new Error('failed to do the thing');
-        }
-        return {stdout: ''};
-      }) as unknown as typeof execa.default);
+      mockExeca([
+        [/^sl resolve --tool internal:dumpjson --all/, new Error('failed to do the thing')],
+      ]);
 
-      const repo = new Repository(repoInfo, mockLogger);
+      const repo = new Repository(repoInfo, mockLogger, mockTracker);
       const onChange = jest.fn();
       repo.onChangeConflictState(onChange);
 
@@ -539,7 +572,7 @@ describe('absolutePathForFileInRepo', () => {
       codeReviewSystem: {type: 'unknown'},
       pullRequestDomain: undefined,
     };
-    const repo = new Repository(repoInfo, mockLogger);
+    const repo = new Repository(repoInfo, mockLogger, mockTracker);
 
     expect(absolutePathForFileInRepo('foo/bar/file.txt', repo)).toEqual(
       '/path/to/repo/foo/bar/file.txt',
@@ -565,7 +598,7 @@ describe('absolutePathForFileInRepo', () => {
       codeReviewSystem: {type: 'unknown'},
       pullRequestDomain: undefined,
     };
-    const repo = new Repository(repoInfo, mockLogger);
+    const repo = new Repository(repoInfo, mockLogger, mockTracker);
 
     expect(absolutePathForFileInRepo('foo\\bar\\file.txt', repo, path.win32)).toEqual(
       'C:\\path\\to\\repo\\foo\\bar\\file.txt',

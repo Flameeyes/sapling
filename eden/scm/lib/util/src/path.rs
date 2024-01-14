@@ -8,6 +8,7 @@
 //! Path-related utilities.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -21,8 +22,11 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::bail;
+use anyhow::Context;
+use fn_error_context::context;
+
 use crate::errors::IOContext;
-use crate::errors::IOResult;
 
 /// Pick a random file name `path.$RAND.atomic` as `real_path`. Write `data` to
 /// it.  Then modify the symlink `path` to point to `real_path`.  Attempt to
@@ -39,7 +43,7 @@ use crate::errors::IOResult;
 ///
 /// Attention: the deletion attempt is based on file name. So do not use
 /// confusing file names like `path.0001.atomic` in the same directory.
-pub fn atomic_write_symlink(path: &Path, data: &[u8]) -> IOResult<()> {
+pub fn atomic_write_symlink(path: &Path, data: &[u8]) -> io::Result<()> {
     let append_name = |suffix: &str| -> PathBuf {
         let mut s = path.to_path_buf().into_os_string();
         s.push(suffix);
@@ -87,10 +91,10 @@ pub fn atomic_write_symlink(path: &Path, data: &[u8]) -> IOResult<()> {
     }?;
 
     // Overwrite the original symlink. This works on both Windows and Linux.
-    fs::rename(&symlink_tmp_path, path).path_context("error renaming temp atomic symlink", path)?;
+    fs::rename(symlink_tmp_path, path).path_context("error renaming temp atomic symlink", path)?;
 
     // Scan. Remove unreferenced files.
-    let _ = (|| -> IOResult<()> {
+    let _ = (|| -> io::Result<()> {
         let looks_like_atomic = |s: &OsStr, prefix: &OsStr| -> bool {
             if let (Some(s), Some(prefix)) = (s.to_str(), prefix.to_str()) {
                 s.starts_with(prefix) && s.ends_with(".atomic")
@@ -124,6 +128,14 @@ pub fn symlink_file(src: &Path, dst: &Path) -> io::Result<()> {
         ErrorKind::Other,
         "symlink is not supported by the system",
     ));
+}
+
+/// Create symlink for a dir.
+pub fn symlink_dir(src: &Path, dst: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    return std::os::windows::fs::symlink_dir(src, dst);
+    #[cfg(not(windows))]
+    symlink_file(src, dst)
 }
 
 /// Removes the UNC prefix `\\?\` on Windows. Does nothing on unices.
@@ -217,6 +229,38 @@ pub fn normalize(path: &Path) -> PathBuf {
     result
 }
 
+/// Given cwd, return `path` relative to `root`, or None if `path` is not under `root`.
+/// This is analagous to pathutil.canonpath() in Python.
+pub fn root_relative_path(root: &Path, cwd: &Path, path: &Path) -> io::Result<Option<PathBuf>> {
+    // Make `path` absolute. I'm not sure why `root` is included.
+    // Maybe in case `cwd` is empty? Or to allow root-relative `cwd`?
+    let path = normalize(&root.join(cwd).join(path));
+
+    // Handle easy case when `path` lexically starts w/ `root`.
+    if let Ok(suffix) = path.strip_prefix(root) {
+        return Ok(Some(suffix.to_path_buf()));
+    }
+
+    // Resolve symlinks in `root` so we can do lexical `strip_prefix` below.
+    let root = root.canonicalize().path_context("canonicalizing", root)?;
+
+    // Test parents of `path` looking for symlinks that point under `root`.
+    let mut test = PathBuf::new();
+    let mut path_parts = path.components();
+    while let Some(part) = path_parts.next() {
+        test.push(part);
+        if test.is_symlink() {
+            // TODO: this makes our loop O(n^2)
+            test = test.canonicalize().path_context("canonicalizing", &test)?;
+        }
+        if let Ok(suffix) = test.strip_prefix(&root) {
+            return Ok(Some(suffix.join(path_parts)));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Remove the file pointed by `path`.
 pub fn remove_file<P: AsRef<Path>>(path: P) -> io::Result<()> {
     let path = path.as_ref();
@@ -234,6 +278,12 @@ pub fn remove_file<P: AsRef<Path>>(path: P) -> io::Result<()> {
     #[cfg(windows)]
     match &result {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            // The file might be a directory symlink
+            if let Ok(r) = remove_directory_symlink(&path) {
+                if r {
+                    return Ok(());
+                }
+            }
             // This file might be mmapp-ed. Try a different way.
             if windows_remove_mmap_file(&path).is_ok() {
                 return Ok(());
@@ -242,6 +292,17 @@ pub fn remove_file<P: AsRef<Path>>(path: P) -> io::Result<()> {
         _ => {}
     }
     result.map_err(Into::into)
+}
+
+#[cfg(windows)]
+/// Tries to remove a symlink in case it was a directory symlink
+fn remove_directory_symlink(path: &Path) -> io::Result<bool> {
+    let metadata = path.symlink_metadata()?;
+    if metadata.is_symlink() {
+        std::fs::remove_dir(path)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Deletes a file even if it is being mmap-ed on Windows.
@@ -287,38 +348,119 @@ fn windows_remove_mmap_file(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Create the directory with specified permission on UNIX systems. We create a temporary
-/// directory at the parent directory of the the directory being created, run chmod to change the
-/// permission then rename the temporary directory to the desired name to prevent leaking directory
-/// with incorrect permissions.
 #[cfg(unix)]
-fn create_dir_with_mode_impl(path: &Path, mode: u32) -> io::Result<()> {
-    if path.exists() {
-        if path.is_dir() {
-            // If metadata operation fails, it's fine.
-            if let Ok(metadata) = path.metadata() {
-                if metadata.permissions().mode() & mode != mode {
-                    // We only attempt to fix the permission. If we can't, proceed.
-                    // TODO: We should at least generate a warning here. We cannot because we
-                    // cannot print messages in Mercurial Rust yet.
-                    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
-                }
-            }
+fn add_stat_context<T, E: Into<anyhow::Error>>(
+    res: anyhow::Result<T, E>,
+    path: Option<&Path>,
+) -> anyhow::Result<T, anyhow::Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let res = res.map_err(Into::into);
+
+    if let Some(path) = path {
+        if let Ok(md) = path.metadata() {
+            return res.context(format!(
+                "stat({:?}) = dev:{} ino:{} mode:0o{:o} uid:{} gid:{} mtime:{}",
+                path,
+                md.dev(),
+                md.ino(),
+                md.mode(),
+                md.uid(),
+                md.gid(),
+                md.mtime()
+            ));
+        }
+    }
+
+    res
+}
+
+/// Resolve leaf symlinks until we get to a non-symlink or non-existent, returning Ok(dest).
+/// Propagates unexpected errors like permission errors.
+#[cfg(unix)]
+fn resolve_symlinks(path: &Path) -> anyhow::Result<PathBuf> {
+    fn inner(path: PathBuf, seen: &mut HashSet<PathBuf>) -> anyhow::Result<PathBuf> {
+        if seen.contains(&path) {
+            bail!("symlink cycle containing {:?}", path);
         }
 
-        return Err(io::ErrorKind::AlreadyExists.into());
+        seen.insert(path.clone());
+
+        match path.read_link() {
+            Ok(target) => inner(target, seen),
+
+            // Not a symlink.
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => Ok(path),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(path),
+
+            // Unexpected error reading file.
+            Err(err) => add_stat_context(
+                Err(err).context(format!("statting {:?}", path)),
+                path.parent(),
+            ),
+        }
     }
+
+    let mut seen = HashSet::new();
+    let mut res = inner(path.to_path_buf(), &mut seen);
+    if seen.len() > 1 {
+        res = res.with_context(|| format!("traversing symlinks from {:?}", path));
+    }
+    res
+}
+
+/// Create the directory with specified permission on UNIX systems. Return
+/// Ok(()) if directory already exists. We create a temporary directory at the
+/// parent directory of the the directory being created, run chmod to change the
+/// permission then rename the temporary directory to the desired name to
+/// prevent leaking directory with incorrect permissions.
+#[cfg(unix)]
+#[context("creating dir {:?} with mode 0o{:o}", path, mode)]
+fn create_dir_with_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
+    use anyhow::anyhow;
+
+    let path = resolve_symlinks(path)?;
+
+    match path.metadata() {
+        Ok(md) if md.is_file() => {
+            return Err(anyhow!(io::Error::from(ErrorKind::AlreadyExists)))
+                .context(format!("path exists as a file: {:?}", path));
+        }
+        Ok(md) => {
+            // Symlinks were resolved above - assume is_dir.
+            if md.permissions().mode() & mode != mode {
+                // Best effort to fix permissions.
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+            }
+            return Ok(());
+        }
+        // Fall through and try creating it.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return add_stat_context(
+                Err(err).context(format!("error statting {:?}", path)),
+                path.parent(),
+            );
+        }
+    };
+
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             ErrorKind::NotFound,
             format!("`{:?}` does not have a parent directory", path),
         )
     })?;
-    let temp = tempfile::TempDir::new_in(&parent)?;
-    fs::set_permissions(&temp, fs::Permissions::from_mode(mode))?;
+
+    let parent = resolve_symlinks(parent)?;
+
+    let temp = add_stat_context(tempfile::TempDir::new_in(&parent), Some(&parent))
+        .with_context(|| format!("creating temp dir in {:?}", parent))?;
+
+    fs::set_permissions(&temp, fs::Permissions::from_mode(mode))
+        .with_context(|| format!("setting permissions on temp dir {:?}", temp))?;
 
     let temp = temp.into_path();
-    if let Err(e) = fs::rename(&temp, path) {
+    if let Err(e) = fs::rename(&temp, &path) {
         // In the unlikely event where the rename fails, we attempt to clean up the
         // previously leaked temporary file before returning.
         let _ = fs::remove_dir(&temp);
@@ -330,50 +472,51 @@ fn create_dir_with_mode_impl(path: &Path, mode: u32) -> io::Result<()> {
         // platform we are on.
         // Similarly, when the destinated directory is a file, we get `ENOTDIR` instead of `EEXIST`.
         match e.raw_os_error() {
-            Some(libc::ENOTEMPTY) | Some(libc::ENOTDIR) => Err(ErrorKind::AlreadyExists.into()),
-            _ => Err(e),
+            Some(libc::ENOTEMPTY) | Some(libc::ENOTDIR) => {
+                Err(io::Error::from(ErrorKind::AlreadyExists).into())
+            }
+            _ => Err::<(), anyhow::Error>(e.into())
+                .context(format!("renaming temp dir {:?} to {:?}", temp, &path)),
         }
     } else {
         Ok(())
     }
 }
 
-/// Create the directory. The mode argument is ignored on non-UNIX systems.
+/// Create the directory. Return Ok(()) if directory already exists.
+/// The mode argument is ignored on non-UNIX systems.
 #[cfg(not(unix))]
-fn create_dir_with_mode_impl(path: &Path, _mode: u32) -> io::Result<()> {
-    fs::create_dir(path)
-}
-
-fn create_dir_with_mode(path: &Path, mode: u32) -> io::Result<()> {
-    match create_dir_with_mode_impl(path, mode) {
+#[context("creating dir {:?}", path)]
+fn create_dir_with_mode(path: &Path, _mode: u32) -> anyhow::Result<()> {
+    match fs::create_dir(path) {
         Ok(()) => Ok(()),
-        Err(e) => {
-            if e.kind() == ErrorKind::AlreadyExists && path.is_dir() {
-                Ok(())
-            } else {
-                Err(e)
-            }
-        }
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
+        Err(err) => Err(err.into()),
     }
 }
 
+fn is_io_error_kind(err: &anyhow::Error, kind: ErrorKind) -> bool {
+    err.downcast_ref::<io::Error>()
+        .is_some_and(|err| err.kind() == kind)
+}
+
 /// Create the directory and ignore failures when a directory of the same name already exists.
-pub fn create_dir(path: impl AsRef<Path>) -> io::Result<()> {
+pub fn create_dir(path: impl AsRef<Path>) -> anyhow::Result<()> {
     create_dir_with_mode(path.as_ref(), 0o755)
 }
 
 /// Create the directory with group write permission on UNIX systems.
-pub fn create_shared_dir(path: impl AsRef<Path>) -> io::Result<()> {
+pub fn create_shared_dir(path: impl AsRef<Path>) -> anyhow::Result<()> {
     create_dir_with_mode(path.as_ref(), 0o2775)
 }
 
 /// Create the directory and its ancestors. The mode argument is ignored on non-UNIX systems.
-pub fn create_dir_all_with_mode(path: impl AsRef<Path>, mode: u32) -> io::Result<()> {
+pub fn create_dir_all_with_mode(path: impl AsRef<Path>, mode: u32) -> anyhow::Result<()> {
     let mut to_create = vec![path.as_ref()];
     while let Some(dir) = to_create.pop() {
         match create_dir_with_mode(dir, mode) {
             Ok(()) => continue,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            Err(err) if is_io_error_kind(&err, io::ErrorKind::NotFound) => {
                 to_create.push(dir);
                 match dir.parent() {
                     Some(parent) => to_create.push(parent),
@@ -387,7 +530,7 @@ pub fn create_dir_all_with_mode(path: impl AsRef<Path>, mode: u32) -> io::Result
 }
 
 /// Create the directory and ancestors with group write permission on UNIX systems.
-pub fn create_shared_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+pub fn create_shared_dir_all(path: impl AsRef<Path>) -> anyhow::Result<()> {
     create_dir_all_with_mode(path, 0o2775)
 }
 
@@ -406,7 +549,6 @@ pub fn create_shared_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
 ///   expansion, meaning that if an environment variable is expanded into a
 ///   string starting with a tilde (`~`), the tilde will be expanded into the
 ///   user's home directory.
-///
 pub fn expand_path(path: impl AsRef<str>) -> PathBuf {
     expand_path_impl(path.as_ref(), |k| env::var(k).ok(), dirs::home_dir)
 }
@@ -521,8 +663,36 @@ pub fn relativize(base: &Path, path: &Path) -> PathBuf {
     rel_path
 }
 
+/// Replace forward slashes (/) with backward slashes (\) on a wide coded-path
+#[cfg(windows)]
+pub fn replace_slash_with_backslash(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::ffi::OsStringExt;
+
+    use widestring::U16Str;
+
+    // Convert OsString to Vec<u16> (UTF-16 representation on Windows)
+    let mut utf16_string: Vec<u16> = path.as_os_str().encode_wide().collect();
+
+    let to_replace = U16Str::from_slice(&mut utf16_string)
+        .char_indices()
+        .filter_map(|(i, c)| {
+            c.ok()
+                .map(|c| if c == '/' { Some(i) } else { None })
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+
+    for i in to_replace {
+        utf16_string[i] = '\\' as u16;
+    }
+
+    PathBuf::from(std::ffi::OsString::from_wide(&utf16_string))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs::create_dir_all;
     use std::fs::File;
 
     use anyhow::Result;
@@ -532,6 +702,9 @@ mod tests {
 
     #[cfg(windows)]
     mod windows {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::ffi::OsStringExt;
+
         use super::*;
 
         #[test]
@@ -555,6 +728,47 @@ mod tests {
         fn test_normalize_path() {
             assert_eq!(normalize(r"a/b\c\..\.".as_ref()), Path::new(r"a\b"));
             assert_eq!(normalize("z:/a//b/./".as_ref()), Path::new(r"z:\a\b"));
+        }
+
+        #[test]
+        fn test_replace_slash_with_backslash() {
+            // Test replacing a normal string
+            let utf16_bytes: &[u16] = &[0xd83c, 0xdf31, 0x002f, 0x0073, 0x0061, 0x0070];
+            let path = PathBuf::from(std::ffi::OsString::from_wide(utf16_bytes));
+            let expected = "🌱\\sap".encode_utf16().collect::<Vec<_>>();
+            assert_eq!(
+                replace_slash_with_backslash(&path)
+                    .as_os_str()
+                    .encode_wide()
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+
+            // Test replacing string with the / character encoded on it
+            // This string is the same as "expected" above, but with one character corrupted
+            let utf16_bytes: &[u16] = &[0xd83c, 0x002f, 0x002f, 0x0073, 0x0061, 0x0070];
+            // 0x005c is the UTF-16 character for backslash
+            let expected: Vec<u16> = Vec::from([0xd83c, 0x005c, 0x005c, 0x0073, 0x0061, 0x0070]);
+            let path = PathBuf::from(std::ffi::OsString::from_wide(utf16_bytes));
+            assert_eq!(
+                replace_slash_with_backslash(&path)
+                    .as_os_str()
+                    .encode_wide()
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+
+            // Another case of / being on unexpected places
+            let utf16_bytes: &[u16] = &[0x002f, 0xdf31, 0x002f, 0x0073, 0x0061, 0x0070];
+            let expected: Vec<u16> = Vec::from([0x005c, 0xdf31, 0x005c, 0x0073, 0x0061, 0x0070]);
+            let path = PathBuf::from(std::ffi::OsString::from_wide(utf16_bytes));
+            assert_eq!(
+                replace_slash_with_backslash(&path)
+                    .as_os_str()
+                    .encode_wide()
+                    .collect::<Vec<_>>(),
+                expected,
+            );
         }
     }
 
@@ -635,10 +849,28 @@ mod tests {
 
             Ok(())
         }
+
+        #[test]
+        fn test_create_dir_no_perms() -> Result<()> {
+            let tempdir = TempDir::new()?;
+            let mut path = tempdir.path().to_path_buf();
+            path.push("nope");
+
+            std::fs::create_dir(&path)?;
+            std::fs::set_permissions(&path, fs::Permissions::from_mode(0o0))?;
+
+            let err = create_dir_with_mode(&path.join("dir"), 0o775).unwrap_err();
+            assert!(is_io_error_kind(&err, io::ErrorKind::PermissionDenied));
+
+            // Make sure we give parent dir's info in error.
+            assert!(format!("{:?}", err).contains(&format!("stat({:?}) = ", path)));
+
+            Ok(())
+        }
     }
 
     fn test_create_dir_all_fn(
-        create_fn: &dyn Fn(&PathBuf) -> io::Result<()>,
+        create_fn: &dyn Fn(&PathBuf) -> anyhow::Result<()>,
         mode: u32,
     ) -> Result<()> {
         let tempdir = TempDir::new()?;
@@ -652,14 +884,21 @@ mod tests {
             assert_eq!(metadata.permissions().mode(), mode);
         }
 
+        #[cfg(windows)]
+        let _ = mode;
+
         // Sanity that there is no error if directory already exists.
         create_fn(&path)?;
 
-        let broken_symlink = tempdir.path().join("foo").join("bar").join("oops");
-        symlink_file(&tempdir.path().join("doesnt_exist"), &broken_symlink)?;
+        #[cfg(unix)]
+        {
+            let broken_symlink = tempdir.path().join("foo").join("bar").join("oops");
+            symlink_file(&tempdir.path().join("doesnt_exist"), &broken_symlink)?;
 
-        // Don't get stuck in a loop due to broken symlink.
-        assert!(create_fn(&broken_symlink.join("nope")).is_err());
+            // Resolve symlinks first, allowing us to create dirs across broken symlinks.
+            assert!(create_fn(&broken_symlink.join("nope")).is_ok());
+            assert!(tempdir.path().join("doesnt_exist").join("nope").is_dir());
+        }
 
         // Sanity that we get errors if there is a regular file in the way.
         let regular_file = tempdir.path().join("regular_file");
@@ -681,7 +920,7 @@ mod tests {
         // c: symlink -> c.xxxx: "2"
         atomic_write_symlink(&j("c"), b"2")?;
         // Keep an mmap of the current "c".
-        let file = fs::OpenOptions::new().read(true).open(&j("c"))?;
+        let file = fs::OpenOptions::new().read(true).open(j("c"))?;
         let mmap = unsafe { memmap2::Mmap::map(&file) }?;
         // This file should be automatically deleted.
         fs::write(j("c.aaaa.atomic"), b"0")?;
@@ -690,12 +929,12 @@ mod tests {
         // mmap has the old content.
         assert_eq!(mmap.as_ref(), b"2");
         // Reading c gets new data.
-        assert_eq!(fs::read(&j("c"))?, b"3");
+        assert_eq!(fs::read(j("c"))?, b"3");
         // a: should exist
         assert!(j("a").exists());
         // 4 files: a, c, c.xxxx, c.lock
         let count = || {
-            fs::read_dir(&path)
+            fs::read_dir(path)
                 .unwrap()
                 .filter(|e| e.as_ref().unwrap().path().exists())
                 .count()
@@ -754,8 +993,10 @@ mod tests {
         let mut path = tempdir.path().to_path_buf();
         path.push("dir");
         File::create(&path)?;
+
         let err = create_dir(&path).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::AlreadyExists);
+        assert!(is_io_error_kind(&err, io::ErrorKind::AlreadyExists));
+
         Ok(())
     }
 
@@ -766,15 +1007,15 @@ mod tests {
         path.push("nonexistentparent");
         path.push("dir");
         let err = create_dir(&path).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert!(is_io_error_kind(&err, ErrorKind::NotFound));
         Ok(())
     }
 
     #[test]
     fn test_create_dir_without_empty_path() {
         let empty = Path::new("");
-        let err = create_dir(&empty).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::NotFound);
+        let err = create_dir(empty).unwrap_err();
+        assert!(is_io_error_kind(&err, ErrorKind::NotFound));
     }
 
     #[test]
@@ -794,7 +1035,7 @@ mod tests {
         let path = "$foo/${bar}/$baz";
         let expected = PathBuf::from("/home/user/a/b/$baz");
 
-        assert_eq!(expand_path_impl(&path, getenv, homedir), expected);
+        assert_eq!(expand_path_impl(path, getenv, homedir), expected);
     }
 
     #[test]
@@ -831,5 +1072,49 @@ mod tests {
         let cwd = Path::new(".").canonicalize().unwrap();
         let result = relativize(&cwd, &cwd.join("a").join("b"));
         assert_eq!(result, Path::new("a").join("b"));
+    }
+
+    #[test]
+    fn test_root_relative_path() -> Result<()> {
+        let tempdir = TempDir::new()?;
+
+        let parent = tempdir.path().join("parent");
+        let root = parent.join("root");
+        let child = root.join("child");
+        create_dir_all(&child)?;
+
+        assert_eq!(
+            root_relative_path(&root, &root, ".".as_ref())?,
+            Some(PathBuf::from(""))
+        );
+        assert_eq!(
+            root_relative_path(&root, &child, ".".as_ref())?,
+            Some(PathBuf::from("child"))
+        );
+        assert_eq!(
+            root_relative_path(&root, &child, "foo".as_ref())?,
+            Some(["child", "foo"].iter().collect::<PathBuf>()),
+        );
+
+        let symlink_to_root = parent.join("symlink_to_root");
+        symlink_dir(&root, &symlink_to_root)?;
+        assert_eq!(
+            root_relative_path(&root, &root, &symlink_to_root.join("child"))?,
+            Some(PathBuf::from("child")),
+        );
+
+        let symlink_to_child = parent.join("symlink_to_child");
+        symlink_dir(&child, &symlink_to_child)?;
+        assert_eq!(
+            root_relative_path(&root, &root, &symlink_to_child.join("foo"))?,
+            Some(["child", "foo"].iter().collect::<PathBuf>()),
+        );
+
+        assert!(root_relative_path(&root, &parent, "foo".as_ref())?.is_none());
+
+        // Sanity that we don't treat "root" as prefix of "rootbeer".
+        assert!(root_relative_path(&root, &root, &parent.join("rootbeer"))?.is_none());
+
+        Ok(())
     }
 }

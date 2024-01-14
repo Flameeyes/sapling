@@ -226,6 +226,15 @@ class EdenConfig : private ConfigSettingManager {
   // [config]
 
   /**
+   * If EdenFS should auto migrate non inmemory inode catalogs to inmemory on
+   * Windows.
+   */
+  ConfigSetting<bool> migrateToInMemoryCatalog{
+      "core:migrate_existing_to_in_memory_catalog",
+      true,
+      this};
+
+  /**
    * How often the on-disk config information should be checked for changes.
    */
   ConfigSetting<std::chrono::nanoseconds> configReloadInterval{
@@ -279,9 +288,10 @@ class EdenConfig : private ConfigSettingManager {
       "ssl:client-certificate",
       kUnspecifiedDefault,
       this};
-  ConfigSetting<std::vector<AbsolutePath>> clientCertificateLocations{
+
+  ConfigSetting<std::vector<std::string>> clientCertificateLocations{
       "ssl:client-certificate-locations",
-      std::vector<AbsolutePath>{},
+      std::vector<std::string>{},
       this};
 
   ConfigSetting<bool> useMononoke{"mononoke:use-mononoke", false, this};
@@ -410,6 +420,15 @@ class EdenConfig : private ConfigSettingManager {
       5,
       this};
 
+  /**
+   * The maximum number blob SHA-1s and sizes to keep in memory per mount. See
+   * the comment on `ObjectStore::metadataCache_` for more details.
+   */
+  ConfigSetting<uint64_t> metadataCacheSize{
+      "store:metadata-cache-size",
+      1'000'000,
+      this};
+
   // [fuse]
 
   /**
@@ -489,20 +508,6 @@ class EdenConfig : private ConfigSettingManager {
    * Controls whether Mountd will register itself against rpcbind.
    */
   ConfigSetting<bool> registerMountd{"nfs:register-mountd", false, this};
-
-  /**
-   * Number of threads that will service the NFS requests.
-   */
-  ConfigSetting<uint64_t> numNfsThreads{"nfs:num-servicing-threads", 8, this};
-
-  /**
-   * Maximum number of pending NFS requests. If more requests are inflight, the
-   * NFS code will block.
-   */
-  ConfigSetting<uint64_t> maxNfsInflightRequests{
-      "nfs:max-inflight-requests",
-      1000,
-      this};
 
   /**
    * Buffer size for read and writes requests. Default to 16 KiB.
@@ -636,6 +641,25 @@ class EdenConfig : private ConfigSettingManager {
       true,
       this};
 
+  // [fschannel]
+
+  /**
+   * Number of threads that will service the background FS channel requests.
+   */
+  ConfigSetting<uint64_t> numFsChannelThreads{
+      "fschannel:num-servicing-threads",
+      std::thread::hardware_concurrency(),
+      this};
+
+  /**
+   * Maximum number of pending FS channel requests. If more requests are
+   * inflight, the FS channel code will block.
+   */
+  ConfigSetting<uint64_t> maxFsChannelInflightRequests{
+      "fschannel:max-inflight-requests",
+      1000,
+      this};
+
   // [hg]
 
   /**
@@ -703,20 +727,10 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
-   * Whether fetching trees should fall back on an external hg importer process.
+   * Whether fetching objects should fall back to hg importer process.
    */
-  ConfigSetting<bool> hgTreeFetchFallback{"hg:tree-fetch-fallback", true, this};
-
-  /**
-   * Whether fetching blobs should fall back on an external hg importer process.
-   */
-  ConfigSetting<bool> hgBlobFetchFallback{"hg:blob-fetch-fallback", true, this};
-
-  /**
-   * Whether fetching blob metadata should fall back to fetching blobs.
-   */
-  ConfigSetting<bool> hgBlobMetaFetchFallback{
-      "hg:blobmeta-fetch-fallback",
+  ConfigSetting<bool> hgImporterFetchFallback{
+      "hg:importer-fetch-fallback",
       true,
       this};
 
@@ -739,10 +753,11 @@ class EdenConfig : private ConfigSettingManager {
    *
    * DO NOT USE UNLESS YOU HAVE THE OK FROM THE EDENFS TEAM.
    */
-  ConfigSetting<std::unordered_set<RelativePath>> hgFilteredPaths{
-      "hg:filtered-paths",
-      std::unordered_set<RelativePath>{},
-      this};
+  ConfigSetting<std::shared_ptr<std::unordered_set<RelativePath>>>
+      hgFilteredPaths{
+          "hg:filtered-paths",
+          std::make_shared<std::unordered_set<RelativePath>>(),
+          this};
 
   // [backingstore]
 
@@ -926,7 +941,7 @@ class EdenConfig : private ConfigSettingManager {
    */
   ConfigSetting<uint32_t> nfsCrawlReadThreshold{
       "experimental:nfs-crawl-read-threshold",
-      500,
+      1000,
       this};
 
   /**
@@ -935,7 +950,7 @@ class EdenConfig : private ConfigSettingManager {
    */
   ConfigSetting<uint32_t> nfsCrawlReadDirThreshold{
       "experimental:nfs-crawl-readdir-threshold",
-      100,
+      250,
       this};
 
   /**
@@ -945,13 +960,6 @@ class EdenConfig : private ConfigSettingManager {
       "experimental:nfs-crawl-excluded-process-names",
       {},
       this};
-
-  /**
-   * Controls whether EdenFS uses EdenApi to import data from remote.
-   *
-   * TODO: Remove once this config value is no longer written.
-   */
-  ConfigSetting<bool> useEdenApi{"experimental:use-edenapi", true, this};
 
   /**
    * Controls whether EdenFS exports itself as an NFS server.
@@ -981,6 +989,16 @@ class EdenConfig : private ConfigSettingManager {
    */
   ConfigSetting<bool> alwaysInvalidateDirectory{
       "experimental:always-invalidate-directories",
+      folly::kIsWindows,
+      this};
+
+  /**
+   * Controls whether EdenFS symlinks are enabled on Windows.
+   *
+   * On Windows this is on by default but can be disabled via this setting.
+   */
+  ConfigSetting<bool> windowsSymlinksEnabled{
+      "experimental:windows-symlinks-enabled",
       folly::kIsWindows,
       this};
 
@@ -1120,6 +1138,8 @@ class EdenConfig : private ConfigSettingManager {
       0,
       this};
 
+  // [predictive-prefetch-profiles]
+
   /**
    * The number of globs to use for a predictive prefetch profile,
    * 1500 by default.
@@ -1132,7 +1152,7 @@ class EdenConfig : private ConfigSettingManager {
   // [redirections]
 
   /**
-   * Whether to use APFS volumes or disk images for bind
+   * Whether to use symlinks, APFS volumes, or disk images for bind
    * redirections on macOS.
    */
   ConfigSetting<std::string> darwinRedirectionType{
@@ -1227,14 +1247,6 @@ class EdenConfig : private ConfigSettingManager {
    */
   ConfigSetting<bool> multiThreadedFsck{"fsck:multi-threaded", true, this};
 
-  /**
-   * Should `eden fsck` use the Python or C++ implementation
-   */
-  ConfigSetting<bool> useCppImplementation{
-      "fsck:use-cpp-implementation",
-      false,
-      this};
-
   // [glob]
 
   /**
@@ -1256,6 +1268,65 @@ class EdenConfig : private ConfigSettingManager {
    */
   ConfigSetting<std::vector<std::string>> doctorIgnoredProblemClassNames{
       "doctor:ignored-problem-class-names",
+      {},
+      this};
+
+  /**
+   * Whether edenfsctl doctor should check for Kerberos certificate issues.
+   */
+  ConfigSetting<bool> doctorEnableKerberosCheck{
+      "doctor:enable-kerberos-check",
+      false,
+      this};
+
+  /**
+   * The minimum kernel version required for EdenFS to work correctly.
+   */
+  ConfigSetting<std::string> doctorMinimumKernelVersion{
+      "doctor:minimum-kernel-version",
+      "4.11.3-67",
+      this};
+
+  /**
+   * Known bad kernel versions for which we should print a warning in `edenfsctl
+   * doctor`.
+   */
+  ConfigSetting<std::string> doctorKnownBadKernelVersions{
+      "doctor:known-bad-kernel-versions",
+      "TODO,TEST",
+      this};
+
+  /**
+   * Extensions that may do bad things that we want to warn about in
+   * doctor.
+   */
+  ConfigSetting<std::vector<std::string>> doctorExtensionWarnList{
+      "doctor:vscode-extensions-warn-list",
+      {},
+      this};
+
+  /**
+   * Extensions that will do bad things that we definitely want to advise
+   * against using.
+   */
+  ConfigSetting<std::vector<std::string>> doctorExtensionBlockList{
+      "doctor:vscode-extensions-block-list",
+      {},
+      this};
+
+  /**
+   * Extensions that we know are fine and should not be warned against.
+   */
+  ConfigSetting<std::vector<std::string>> doctorExtensionAllowList{
+      "doctor:vscode-extensions-allow-list",
+      {},
+      this};
+
+  /**
+   * Extensions authors that are known and we should not warn about.
+   */
+  ConfigSetting<std::vector<std::string>> doctorExtensionAuthorAllowList{
+      "doctor:vscode-extensions-author-allow-list",
       {},
       this};
 

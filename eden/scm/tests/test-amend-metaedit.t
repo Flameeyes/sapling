@@ -2,7 +2,6 @@
 
   $ eagerepo
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig workingcopy.ruststatus=false
   $ configure mutation-norecord
   $ enable amend rebase
   $ export HGIDENTITY=sl
@@ -36,10 +35,6 @@
 
   $ glog() {
   >   hg log -G -T '{node|short}@{branch}({phase}) {desc|firstline}\n' "$@"
-  > }
-
-  $ shaof() {
-  >   hg log -T {node} -r "first(desc($1))"
   > }
 
   $ mkcommits() {
@@ -553,11 +548,11 @@ Create some commits for testing the editing of commits in batch using JSON input
 
   $ cat << EOF >> jsoninput
   > {
-  >   "$(shaof A3)": {
+  >   "$A3": {
   >     "message": "C3",
   >     "user": "C3PO <c3po@tatooine.com>"
   >   },
-  >   "$(shaof A2)": {
+  >   "$A2": {
   >     "message": "R2\nD2",
   >     "user": "R2D2 <r2d2@naboo.com>"
   >   }

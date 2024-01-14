@@ -1,6 +1,5 @@
 #debugruntest-compatible
 #inprocess-hg-incompatible
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
   $ setconfig devel.segmented-changelog-rev-compat=true
 
@@ -17,7 +16,7 @@
   $ cd server
   $ cat >> .hg/hgrc << EOF
   > [extensions]
-  > treemanifest=$TESTDIR/../edenscm/ext/treemanifestserver.py
+  > treemanifest=$TESTDIR/../sapling/ext/treemanifestserver.py
   > [infinitepush]
   > server = yes
   > indextype = disk

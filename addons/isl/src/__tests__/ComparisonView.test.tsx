@@ -9,16 +9,20 @@ import App from '../App';
 import platform from '../platform';
 import {
   clearAllRecoilSelectorCaches,
-  closeCommitInfoSidebar,
   COMMIT,
   expectMessageSentToServer,
+  openCommitInfoSidebar,
   resetTestMessages,
   simulateCommits,
   simulateMessageFromServer,
   simulateUncommittedChangedFiles,
 } from '../testUtils';
+import {GeneratedStatus} from '../types';
 import {act, screen, render, waitFor, fireEvent, cleanup, within} from '@testing-library/react';
+import fs from 'fs';
+import path from 'path';
 import {ComparisonType} from 'shared/Comparison';
+import {unwrap} from 'shared/utils';
 
 afterEach(cleanup);
 
@@ -56,6 +60,31 @@ diff --git -r a1b2c3d4e5f6 some/path/foo.go
 +fmt.Println("hi")
 `;
 
+const DIFF_WITH_SYNTAX = `\
+diff --git deletedFile.js deletedFile.js
+deleted file mode 100644
+--- deletedFile.js
++++ /dev/null
+@@ -1,1 +0,0 @@
+-console.log('goodbye');
+diff --git newFile.js newFile.js
+new file mode 100644
+--- /dev/null
++++ newFile.js
+@@ -0,0 +1,1 @@
++console.log('hello');
+diff --git someFile.js someFile.js
+--- someFile.js
++++ someFile.js
+@@ -2,5 +2,5 @@
+ function foo() {
+   const variable_in_context_line = 0;
+-  const variable_in_before = 1;
++  const variable_in_after = 1;
+   console.log(variable_in_content_line);
+ }
+`;
+
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 // reset recoil caches between test runs
@@ -65,10 +94,11 @@ afterEach(() => {
 
 describe('ComparisonView', () => {
   beforeEach(() => {
+    mockFetchToSupportSyntaxHighlighting();
     resetTestMessages();
     render(<App />);
     act(() => {
-      closeCommitInfoSidebar();
+      openCommitInfoSidebar();
       simulateCommits({
         value: [
           COMMIT('1', 'some public base', '0', {phase: 'public'}),
@@ -82,13 +112,20 @@ describe('ComparisonView', () => {
     });
   });
 
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
   function clickComparisonViewButton() {
     act(() => {
       const button = screen.getByTestId('open-comparison-view-button-UNCOMMITTED');
       fireEvent.click(button);
     });
   }
-  async function openUncommittedChangesComparison() {
+  async function openUncommittedChangesComparison(
+    diffContent?: string,
+    genereatedStatuses?: Record<string, GeneratedStatus>,
+  ) {
     clickComparisonViewButton();
     await waitFor(
       () =>
@@ -102,9 +139,15 @@ describe('ComparisonView', () => {
     );
     act(() => {
       simulateMessageFromServer({
+        type: 'fetchedGeneratedStatuses',
+        results: genereatedStatuses ?? {},
+      });
+    });
+    act(() => {
+      simulateMessageFromServer({
         type: 'comparison',
         comparison: {type: ComparisonType.UncommittedChanges},
-        data: {diff: {value: UNCOMMITTED_CHANGES_DIFF}},
+        data: {diff: {value: diffContent ?? UNCOMMITTED_CHANGES_DIFF}},
       });
     });
   }
@@ -322,4 +365,222 @@ describe('ComparisonView', () => {
     expect(platform.clipboardCopy).toHaveBeenCalledTimes(2);
     expect(platform.clipboardCopy).toHaveBeenLastCalledWith('some/path/foo.go');
   });
+
+  describe('syntax highlighting', () => {
+    it('renders syntax highlighting', async () => {
+      await openUncommittedChangesComparison(DIFF_WITH_SYNTAX);
+      await waitForSyntaxHighlightingToAppear(screen.getByTestId('comparison-view'));
+
+      // console from console.log is highlighted as its own token
+      const tokens = within(screen.getByTestId('comparison-view')).queryAllByText('console');
+      expect(tokens.length).toBeGreaterThan(0);
+      // highlighted tokens have classes like mtk1, mtk2, etc.
+      expect(tokens.some(token => /mtk\d+/.test(token.className))).toBe(true);
+    });
+
+    it('renders highlighting in context lines and diff lines', async () => {
+      await openUncommittedChangesComparison(DIFF_WITH_SYNTAX);
+      await waitForSyntaxHighlightingToAppear(screen.getByTestId('comparison-view'));
+
+      expect(
+        within(screen.getByTestId('comparison-view')).queryAllByText('variable_in_context_line'),
+      ).toHaveLength(2);
+      expect(
+        within(screen.getByTestId('comparison-view')).getByText('variable_in_before'),
+      ).toBeInTheDocument();
+      expect(
+        within(screen.getByTestId('comparison-view')).getByText('variable_in_after'),
+      ).toBeInTheDocument();
+    });
+
+    it('highlights expanded context lines', async () => {
+      await openUncommittedChangesComparison(DIFF_WITH_SYNTAX);
+      await waitForSyntaxHighlightingToAppear(screen.getByTestId('comparison-view'));
+
+      const expandButton = inComparisonView().getByText('Expand 1 line');
+      expect(expandButton).toBeInTheDocument();
+      act(() => {
+        fireEvent.click(expandButton);
+      });
+      await waitFor(() => {
+        expectMessageSentToServer({
+          type: 'requestComparisonContextLines',
+          id: {path: 'someFile.js', comparison: {type: ComparisonType.UncommittedChanges}},
+          numLines: 1,
+          start: 1,
+        });
+      });
+      act(() => {
+        simulateMessageFromServer({
+          type: 'comparisonContextLines',
+          lines: ['const loaded_additional_context_variable = 5;'],
+          path: 'someFile.js',
+        });
+      });
+      await waitFor(() => {
+        // highlighted token appears by itself
+        expect(
+          inComparisonView().queryAllByText('loaded_additional_context_variable'),
+        ).toHaveLength(2);
+      });
+    });
+  });
+
+  const makeFileDiff = (name: string, content: string) => {
+    return `diff --git file${name}.txt file${name}.txt
+--- file${name}.txt
++++ file${name}.txt
+@@ -1,2 +1,2 @@
+${content}
+`;
+  };
+
+  describe('collapsing files', () => {
+    it('can click to collapse files', async () => {
+      const SINGLE_CHANGE = makeFileDiff('1', '+const x = 1;');
+      await openUncommittedChangesComparison(SINGLE_CHANGE);
+
+      const collapseButton = screen.getByTestId('split-diff-view-file-header-collapse-button');
+      expect(inComparisonView().getByText('const x = 1;')).toBeInTheDocument();
+      expect(inComparisonView().getByText('file1.txt')).toBeInTheDocument();
+      fireEvent.click(collapseButton);
+      expect(inComparisonView().queryByText('const x = 1;')).not.toBeInTheDocument();
+      expect(inComparisonView().getByText('file1.txt')).toBeInTheDocument();
+    });
+
+    it('first files are expanded, later files are collapsed', async () => {
+      // 10 files, 1000 added lines each
+      const HUGE_DIFF = [
+        ...new Array(10)
+          .fill(undefined)
+          .map((_, index) =>
+            makeFileDiff(String(index), new Array(1001).fill("+console.log('hi');").join('\n')),
+          ),
+      ].join('\n');
+      await openUncommittedChangesComparison(HUGE_DIFF);
+
+      const collapsedStates = inComparisonView().queryAllByTestId(
+        /split-diff-view-file-header-(collapse|expand)-button/,
+      );
+      const collapsedValues = collapsedStates.map(node => node.dataset.testid);
+      expect(collapsedValues).toEqual([
+        'split-diff-view-file-header-collapse-button',
+        'split-diff-view-file-header-collapse-button',
+        'split-diff-view-file-header-collapse-button',
+        'split-diff-view-file-header-expand-button',
+        'split-diff-view-file-header-expand-button',
+        'split-diff-view-file-header-expand-button',
+        'split-diff-view-file-header-expand-button',
+        'split-diff-view-file-header-expand-button',
+        'split-diff-view-file-header-expand-button',
+        'split-diff-view-file-header-expand-button',
+      ]);
+    });
+
+    it('a single large file is expanded so you always see something', async () => {
+      const GIANT_FILE = makeFileDiff(
+        'bigChange.txt',
+        new Array(5000).fill('+big_file_contents').join('\n'),
+      );
+      const SMALL_FILE = makeFileDiff('smallChange.txt', '+small_file_contents');
+      const GIANT_AND_SMALL = [GIANT_FILE, SMALL_FILE].join('\n');
+      await openUncommittedChangesComparison(GIANT_AND_SMALL);
+
+      // the large file starts expanded
+      expect(inComparisonView().getAllByText('big_file_contents').length).toBeGreaterThan(0);
+      // the small file starts collapsed
+      expect(inComparisonView().queryByText('small_file_contents')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('genereated files', () => {
+    it('genereated status is fetched for files being compared', async () => {
+      const NORMAL_FILE = makeFileDiff('normal1', '+normal_contents');
+      const PARTIAL_FILE = makeFileDiff('partial1', '+partial_contents');
+      const GENERATED_FILE = makeFileDiff('generated1', '+generated_contents');
+      const ALL = [GENERATED_FILE, PARTIAL_FILE, NORMAL_FILE].join('\n');
+
+      await openUncommittedChangesComparison(ALL);
+      await waitFor(() => {
+        expectMessageSentToServer({
+          type: 'fetchGeneratedStatuses',
+          paths: ['filegenerated1.txt', 'filepartial1.txt', 'filenormal1.txt'],
+        });
+      });
+    });
+
+    it('banner says that files are generated', async () => {
+      const NORMAL_FILE = makeFileDiff('normal2', '+normal_contents');
+      const PARTIAL_FILE = makeFileDiff('partial2', '+partial_contents');
+      const GENERATED_FILE = makeFileDiff('generated2', '+generated_contents');
+      const ALL = [GENERATED_FILE, PARTIAL_FILE, NORMAL_FILE].join('\n');
+
+      await openUncommittedChangesComparison(ALL, {
+        'filenormal2.txt': GeneratedStatus.Manual,
+        'filegenerated2.txt': GeneratedStatus.Generated,
+        'filepartial2.txt': GeneratedStatus.PartiallyGenerated,
+      });
+      expect(inComparisonView().getByText('This file is generated')).toBeInTheDocument();
+      expect(inComparisonView().getByText('This file is partially generated')).toBeInTheDocument();
+    });
+
+    it('generated files are collapsed by default', async () => {
+      const NORMAL_FILE = makeFileDiff('normal3', '+normal_contents');
+      const PARTIAL_FILE = makeFileDiff('partial3', '+partial_contents');
+      const GENERATED_FILE = makeFileDiff('generated3', '+generated_contents');
+      const ALL = [GENERATED_FILE, PARTIAL_FILE, NORMAL_FILE].join('\n');
+
+      await openUncommittedChangesComparison(ALL, {
+        'filenormal3.txt': GeneratedStatus.Manual,
+        'filegenerated3.txt': GeneratedStatus.Generated,
+        'filepartial3.txt': GeneratedStatus.PartiallyGenerated,
+      });
+
+      // normal, partial start expanded
+      expect(inComparisonView().getByText('normal_contents')).toBeInTheDocument();
+      expect(inComparisonView().getByText('partial_contents')).toBeInTheDocument();
+      await waitFor(() => {
+        // genereated starts collapsed
+        expect(inComparisonView().queryByText('generated_contents')).not.toBeInTheDocument();
+      });
+
+      expect(inComparisonView().getByText('Show anyway')).toBeInTheDocument();
+      fireEvent.click(inComparisonView().getByText('Show anyway'));
+      await waitFor(() => {
+        // genereated now expands
+        expect(inComparisonView().getByText('generated_contents')).toBeInTheDocument();
+      });
+    });
+  });
 });
+
+function waitForSyntaxHighlightingToAppear(inside: HTMLElement): Promise<void> {
+  return waitFor(() => {
+    const tokens = inside.querySelectorAll('.mtk1');
+    expect(tokens.length).toBeGreaterThan(0);
+  });
+}
+
+function mockFetchToSupportSyntaxHighlighting(): jest.SpyInstance {
+  return jest.spyOn(global, 'fetch').mockImplementation(
+    jest.fn(async url => {
+      if (url.includes('generated/textmate')) {
+        const match = /.*generated\/textmate\/(.*)$/.exec(url);
+        const filename = unwrap(match)[1];
+        const toPublicDir = (filename: string) =>
+          path.normalize(path.join(__dirname, '../../public/generated/textmate', filename));
+        if (filename === 'onig.wasm') {
+          const file = await fs.promises.readFile(toPublicDir(filename));
+          return {
+            headers: new Map(),
+            arrayBuffer: () => file.buffer,
+          };
+        } else {
+          const file = await fs.promises.readFile(toPublicDir(filename), 'utf-8');
+          return {text: () => file};
+        }
+      }
+      throw new Error(`${url} not found`);
+    }) as jest.Mock,
+  );
+}

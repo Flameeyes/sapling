@@ -1,9 +1,9 @@
 #debugruntest-compatible
 #inprocess-hg-incompatible
+#require symlink
 
   $ configure modern
   $ setconfig format.use-symlink-atomic-write=1
-  $ setconfig workingcopy.ruststatus=false
 
 Test indexedlogdatapack
 
@@ -38,7 +38,7 @@ Break the repo in various ways:
 
   $ rm $TESTTMP/hgcache/master/indexedlogdatastore/latest
   $ rm $TESTTMP/hgcache/master/manifests/indexedlogdatastore/latest
-#if symlink
+#if no-windows
   $ ln -s foo $TESTTMP/hgcache/master/indexedlogdatastore/latest
   $ ln -s foo $TESTTMP/hgcache/master/manifests/indexedlogdatastore/latest
 #else
@@ -51,7 +51,7 @@ Break the repo in various ways:
   $ echo v > .hg/store/mutation/log
   $ echo xx > .hg/store/metalog/blobs/index2-id
   $ rm .hg/store/metalog/roots/meta
-#if symlink
+#if no-windows
   $ ln -s foo .hg/store/metalog/roots/meta
 #else
   $ echo foo > .hg/store/metalog/roots/meta

@@ -2,7 +2,6 @@
 #inprocess-hg-incompatible
 
   $ configure dummyssh
-  $ setconfig workingcopy.ruststatus=false
 #require serve
 
 Initialize repository
@@ -16,7 +15,7 @@ the status call is to check for issue5130
   ...     with open(str(i), 'w') as fh:
   ...         x = fh.write("%s" % (str(i),))
   $ hg -q commit -A -m 'add a lot of files'
-  $ hg st --config status.use-rust=false
+  $ hg st
   $ cd ..
 
 Basic clone
@@ -66,7 +65,7 @@ while cloning
 
   $ cat > delayer.py <<EOF
   > import time
-  > from edenscm import extensions, vfs
+  > from sapling import extensions, vfs
   > def __call__(orig, self, path, *args, **kwargs):
   >     if path == 'data/f1.i':
   >         time.sleep(2)

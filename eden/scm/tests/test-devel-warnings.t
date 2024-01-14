@@ -5,7 +5,7 @@
   > """A small extension that tests our developer warnings
   > """
   > 
-  > from edenscm import error, registrar, repair, util
+  > from sapling import error, registrar, repair, util
   > 
   > cmdtable = {}
   > command = registrar.command(cmdtable)
@@ -96,6 +96,7 @@
   devel-warn: "wlock" acquired after "lock" at:
    * (glob) (?)
    * (glob) (?)
+   * (glob) (?)
 #endif
   $ hg properlocking
   $ hg nowaitlocking
@@ -125,6 +126,7 @@ Stripping from a transaction
   $ hg oldanddeprecated --traceback 2>&1 | egrep '(buggylocking|devel-warn)'
   devel-warn: foorbar is deprecated, go shopping
    * (glob)
+   * (glob) (?)
    * (glob) (?)
 
 #if no-chg normal-layout no-fsmonitor
@@ -173,7 +175,7 @@ Test warning on config option access and registration
   $ cat << EOF > ${TESTTMP}/buggyconfig.py
   > """A small extension that tests our developer warnings for config"""
   > 
-  > from edenscm import registrar, configitems
+  > from sapling import registrar, configitems
   > 
   > cmdtable = {}
   > command = registrar.command(cmdtable)
@@ -203,7 +205,7 @@ Test warning on config option access and registration
   > EOF
 
   $ hg --config "extensions.buggyconfig=${TESTTMP}/buggyconfig.py" buggyconfig
-  devel-warn: extension 'buggyconfig' overwrite config item 'ui.interactive' at:*edenscm/extensions.py:* (_loadextra) (glob)
-  devel-warn: extension 'buggyconfig' overwrite config item 'ui.quiet' at:*edenscm/extensions.py:* (_loadextra) (glob)
+  devel-warn: extension 'buggyconfig' overwrite config item 'ui.interactive' at:*sapling/extensions.py:* (_loadextra) (glob)
+  devel-warn: extension 'buggyconfig' overwrite config item 'ui.quiet' at:*sapling/extensions.py:* (_loadextra) (glob)
 
   $ cd ..

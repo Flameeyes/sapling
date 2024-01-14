@@ -23,7 +23,6 @@
 #  0 <- known good - -
 
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig workingcopy.ruststatus=False
 test bisect-sparse
   $ enable sparse
   $ hg init myrepo
@@ -114,7 +113,7 @@ verify skipping works with --command flag
   $ cat > script.py <<EOF
   > from __future__ import absolute_import
   > import sys
-  > from edenscm import hg, ui as uimod
+  > from sapling import hg, ui as uimod
   > repo = hg.repository(uimod.ui.load(), '.')
   > if repo['.'].rev() >= 6: # where the bug was introduced
   >     sys.exit(1)

@@ -1,6 +1,5 @@
 #chg-compatible
 
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig devel.segmented-changelog-rev-compat=true
   $ hg init repo
   $ cd repo
@@ -104,6 +103,7 @@ Cross and same-directory copies with a relative root:
   warning: dir2 not inside relative root dir1
 
   $ hg diff --git --root dir1 -r 1:tip 'dir2/{copy}'
+  warning: possible glob in non-glob pattern 'dir2/{copy}', did you mean 'glob:dir2/{copy}'?
   warning: dir2/{copy} not inside relative root dir1
 
   $ cd dir1
@@ -168,7 +168,7 @@ Cross and same-directory copies with a relative root:
   $ hg diff --git --root . -r 1:tip ../dir2
   warning: ../dir2 not inside relative root .
   $ hg diff --git --root . -r 1:tip '../dir2/*'
-  possible glob in non-glob pattern '../dir2/*', did you mean 'glob:../dir2/*'? (see 'hg help patterns' for details). (no-windows !)
+  warning: possible glob in non-glob pattern '../dir2/*', did you mean 'glob:../dir2/*'? (no-windows !)
   warning: ../dir2/* not inside relative root . (glob)
   $ cd ..
 

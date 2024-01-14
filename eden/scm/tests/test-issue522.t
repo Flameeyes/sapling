@@ -1,6 +1,5 @@
 #debugruntest-compatible
 
-  $ setconfig workingcopy.ruststatus=False
 https://bz.mercurial-scm.org/522
 
 In the merge below, the file "foo" has the same contents in both
@@ -33,7 +32,7 @@ revision.
     unmatched files in local:
      bar
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: bbd179dfa0a7, local: 71766447bdbb+, remote: 9eaf049ccce4
    foo: remote is newer -> g
   getting foo

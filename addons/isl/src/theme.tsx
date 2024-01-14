@@ -5,10 +5,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type {ReactNode} from 'react';
-
+import {globalRecoil} from './AccessGlobalRecoil';
+import {useCommand} from './ISLShortcuts';
 import platform from './platform';
-import {atom, useRecoilValue} from 'recoil';
+import {atom} from 'recoil';
 
 import './themeLight.css';
 import './themeDark.css';
@@ -38,7 +38,10 @@ export const themeState = atom<ThemeColor>({
   ],
 });
 
-export function ThemeRoot({children}: {children: ReactNode}) {
-  const theme = useRecoilValue(themeState);
-  return <div className={`isl-root ${theme}-theme`}>{children}</div>;
+export function useThemeShortcut() {
+  useCommand('ToggleTheme', () => {
+    if (platform.theme == null) {
+      globalRecoil().set(themeState, theme => (theme === 'dark' ? 'light' : 'dark'));
+    }
+  });
 }

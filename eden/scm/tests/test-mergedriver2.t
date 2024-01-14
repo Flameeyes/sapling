@@ -6,7 +6,6 @@ mergedriver the exact file list to change at "preprocess" time.
   $ enable mergedriver
 
   $ eagerepo
-  $ setconfig workingcopy.ruststatus=false
   $ hg init repo
   $ cd repo
   $ drawdag << 'EOS'
@@ -25,12 +24,12 @@ and add B_add and C_add. Note: there are no conflicts.
   $ setconfig experimental.mergedriver=python:$TESTTMP/mergedriver-test.py
 
   $ cat > $TESTTMP/mergedriver-test.py << EOF
-  > from edenscm import node
+  > from sapling import node
   > from mercurial import node as node2
   > assert node is node2
   > import os
   > def preprocess(ui, repo, hooktype, mergestate, wctx, labels):
-  >     from edenscm import util
+  >     from sapling import util
   >     from mercurial import util as util2
   >     assert util is util2
   >     ui.write("merge driver preprocess\n")

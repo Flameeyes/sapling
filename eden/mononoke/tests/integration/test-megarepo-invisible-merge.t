@@ -97,9 +97,9 @@ Start mononoke server
 
 Setup commit sync mapping
 -- get some bonsai hashes to avoid magic strings later
-  $ FBSOURCE_MASTER_BONSAI=$(get_bonsai_bookmark $FBS_REPOID master_bookmark)
-  $ OVRSOURCE_MASTER_BONSAI=$(get_bonsai_bookmark $OVR_REPOID master_bookmark)
-  $ MEGAREPO_MERGE_BONSAI=$(get_bonsai_bookmark $MEG_REPOID master_bookmark)
+  $ FBSOURCE_MASTER_BONSAI=$(mononoke_newadmin bookmarks --repo-id $FBS_REPOID get master_bookmark)
+  $ OVRSOURCE_MASTER_BONSAI=$(mononoke_newadmin bookmarks --repo-id $OVR_REPOID get master_bookmark)
+  $ MEGAREPO_MERGE_BONSAI=$(mononoke_newadmin bookmarks --repo-id $MEG_REPOID get master_bookmark)
 
 -- insert sync mapping entry
   $ add_synced_commit_mapping_entry $FBS_REPOID $FBSOURCE_MASTER_BONSAI $MEG_REPOID $MEGAREPO_MERGE_BONSAI TEST_VERSION_NAME
@@ -227,14 +227,14 @@ Prepare for the invisible merge
   > --commit-date-rfc3339 "$COMMIT_DATE"
   bffa0e47c22b600605917892c9c9a2604d1640dbac8ae8c88530e0f32bb2c965
   cad6246b8ea9efdb756e6adb2f1a2da2f8d9d43bdabfeceaa4a4213abd334b61
-  $ get_bonsai_bookmark $FBS_REPOID ovrsource/moved_master
+  $ mononoke_newadmin bookmarks --repo-id $FBS_REPOID get ovrsource/moved_master
   0b114e8a3d0d62a31ff8f99b8894603cf37cdb6edc070d744a7a457bd360fc0a
 -- a list of commits we want to merge also includes the pre-delete commit
   $ TOMERGES=(bffa0e47c22b600605917892c9c9a2604d1640dbac8ae8c88530e0f32bb2c965 cad6246b8ea9efdb756e6adb2f1a2da2f8d9d43bdabfeceaa4a4213abd334b61 0b114e8a3d0d62a31ff8f99b8894603cf37cdb6edc070d744a7a457bd360fc0a)
 -- calculate to-merge working copy sizes, they should be gradually increasing
   $ cd "$TESTTMP/fbs-hg-cnt"
   $ for TOMERGE in "${TOMERGES[@]}"; do
-  >  HGHASH=$(REPOID=$FBS_REPOID mononoke_admin --log-level=ERROR convert --from bonsai --to hg $TOMERGE)
+  >  HGHASH=$(mononoke_newadmin convert --repo-id=$FBS_REPOID --from bonsai --to hg --derive $TOMERGE)
   >  REPONAME=fbs-mon hgmn up -q $HGHASH
   >  FILECOUNT=$(find . -path ./.hg -prune -o -type f -print | wc -l)
   >  echo "$HGHASH: $FILECOUNT files"
@@ -252,7 +252,7 @@ Do the invisible merge by gradually merging TOMERGES into master
   >  echo "Current: $CURRENT"
   >  echo "To merge: $TOMERGE"
   >  MERGE=$(REPOID=$FBS_REPOID megarepo_tool --log-level=ERROR bonsai-merge $CURRENT $TOMERGE author "merge execution" --commit-date-rfc3339 "$COMMIT_DATE")
-  >  HGMERGE=$(REPOID=$FBS_REPOID mononoke_admin --log-level=ERROR convert --from bonsai --to hg $MERGE)
+  >  HGMERGE=$(mononoke_newadmin convert --repo-id=$FBS_REPOID --from bonsai --to hg --derive $MERGE)
   >  echo "Merged as (bonsai): $MERGE"
   >  echo "Merged as (hg): $HGMERGE"
   >  REPONAME=fbs-mon hgmn up -q $HGMERGE
@@ -260,7 +260,7 @@ Do the invisible merge by gradually merging TOMERGES into master
   >  FILECOUNT_2=$([ -d ./arvr-legacy ] && find ./arvr-legacy -type f | wc -l)
   >  FILECOUNT=$(($FILECOUNT_1 + $FILECOUNT_2))
   >  echo "file count is: $FILECOUNT"
-  >  REPOID=$FBS_REPOID mononoke_admin --log-level=ERROR bookmarks set master_bookmark $HGMERGE
+  >  mononoke_newadmin bookmarks --repo-id=$FBS_REPOID set master_bookmark $HGMERGE
   >  flush_mononoke_bookmarks
   >  echo "intermediate" >> fbcode/fbcodefile_fbsource
   >  REPONAME=fbs-mon hgmn debugmakepublic -r .
@@ -272,16 +272,19 @@ Do the invisible merge by gradually merging TOMERGES into master
   Merged as (bonsai): 1ccca1cf322891f156df9dbee891293ed9fc8fa706cb057d351f5cc560eaabcd
   Merged as (hg): 91d643697945d5bb502a2c1c2f75ec36b855f308
   file count is: 2
+  Updating publishing bookmark master_bookmark from 3478f726ba230a5071ed5fc3ff32fb99738365cdf1a335830576e3c2664706c1 to 1ccca1cf322891f156df9dbee891293ed9fc8fa706cb057d351f5cc560eaabcd
   Current: 51c49b0bd6828234ce57148769ca56f254e463bd
   To merge: cad6246b8ea9efdb756e6adb2f1a2da2f8d9d43bdabfeceaa4a4213abd334b61
   Merged as (bonsai): 67252d06a4b77e0c8a752dc199bad2441235eece95a63886048fb9ccc58d0298
   Merged as (hg): f2ac779eb5ef342aab788bcb278e57e53b2bc83e
   file count is: 4
+  Updating publishing bookmark master_bookmark from f2ef38d6bcd2abdf522813eba80f473ca3186afcef68d0e2050b2cc85fa59ec6 to 67252d06a4b77e0c8a752dc199bad2441235eece95a63886048fb9ccc58d0298
   Current: 0eb9c5feca13f5b7c5daf2c34b659c3846569fad
   To merge: 0b114e8a3d0d62a31ff8f99b8894603cf37cdb6edc070d744a7a457bd360fc0a
   Merged as (bonsai): ab96a1f9335f5757936bb540d424482dbf41284c90d89e277fee7052fb165561
   Merged as (hg): 005686fbc230dc0be4e1cc2fabf46d87bbb19001
   file count is: 6
+  Updating publishing bookmark master_bookmark from eeb3fe5b22e7d210f39d953a0f99a6ef5aa45ecbaf120cd1e5ee73e09fccc89a to ab96a1f9335f5757936bb540d424482dbf41284c90d89e277fee7052fb165561
   $ REPONAME=fbs-mon hgmn pull -q
   $ hg log -r "$MASTER_BEFORE_MERGES::master_bookmark" -T "{phase} {desc|firstline}\n"
   public fbsource commit 1
@@ -308,8 +311,8 @@ Set mutable counter for the backsyncer (we've synced everything up until now)
   $ sqlite3 $TESTTMP/monsql/sqlite_dbs "INSERT INTO mutable_counters (repo_id, name, value) VALUES ($OVR_REPOID, 'backsync_from_$FBS_REPOID', $LATEST_LOG_ENTRY_ID)"
 
 Set working copy equivalence between ovrsource master and fbsource master
-  $ FBSOURCE_MASTER_BONSAI=$(get_bonsai_bookmark $FBS_REPOID master_bookmark)
-  $ OVRSOURCE_MASTER_BONSAI=$(get_bonsai_bookmark $OVR_REPOID master_bookmark)
+  $ FBSOURCE_MASTER_BONSAI=$(mononoke_newadmin bookmarks --repo-id $FBS_REPOID get master_bookmark)
+  $ OVRSOURCE_MASTER_BONSAI=$(mononoke_newadmin bookmarks --repo-id $OVR_REPOID get master_bookmark)
   $ sqlite3 $TESTTMP/monsql/sqlite_dbs \
   > "INSERT INTO synced_working_copy_equivalence \
   >    (small_repo_id, small_bcs_id, large_repo_id, large_bcs_id, sync_map_version_name) \

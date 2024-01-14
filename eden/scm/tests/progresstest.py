@@ -3,13 +3,13 @@ from __future__ import absolute_import
 import time
 
 import bindings
-from edenscm import progress, pycompat, registrar, util
+from sapling import progress, pycompat, registrar, util
 
 cmdtable = {}
 command = registrar.command(cmdtable)
 
 
-class faketime(object):
+class faketime:
     def __init__(self):
         self.now = 0
 

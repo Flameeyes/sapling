@@ -13,6 +13,7 @@ import {VSCodeButton} from '@vscode/webview-ui-toolkit/react';
 import {atom, useRecoilState} from 'recoil';
 import {useContextMenu} from 'shared/ContextMenu';
 import {Icon} from 'shared/Icon';
+import {isMac} from 'shared/OperatingSystem';
 
 export type ChangedFilesDisplayType = 'short' | 'fullPaths' | 'tree' | 'fish';
 
@@ -52,7 +53,12 @@ export function ChangedFileDisplayTypePicker() {
   const contextMenu = useContextMenu(() => actions);
 
   return (
-    <Tooltip title={t('Change how file paths are displayed')}>
+    <Tooltip
+      title={t(
+        isMac
+          ? 'Change how file paths are displayed.\n\nTip: Hold the alt key to quickly see full file paths.'
+          : 'Change how file paths are displayed.\n\nTip: Hold the ctrl key to quickly see full file paths.',
+      )}>
       <VSCodeButton
         appearance="icon"
         className="changed-file-display-type-picker"

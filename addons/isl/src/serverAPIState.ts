@@ -6,7 +6,6 @@
  */
 
 import type {MessageBusStatus} from './MessageBus';
-import type {CommitTree} from './getCommitTree';
 import type {Operation} from './operations/Operation';
 import type {
   ApplicationInfo,
@@ -26,15 +25,15 @@ import type {EnsureAssignedTogether} from 'shared/EnsureAssignedTogether';
 
 import serverAPI from './ClientToServerAPI';
 import messageBus from './MessageBus';
-import {successionTracker} from './SuccessionTracker';
-import {getCommitTree, walkTreePostorder} from './getCommitTree';
+import {latestSuccessorsMap, successionTracker} from './SuccessionTracker';
+import {Dag} from './dag/dag';
 import {persistAtomToConfigEffect} from './persistAtomToConfigEffect';
 import {clearOnCwdChange} from './recoilUtils';
 import {initialParams} from './urlParams';
 import {short} from './utils';
 import {DEFAULT_DAYS_OF_COMMITS_TO_LOAD} from 'isl-server/src/constants';
 import {selectorFamily, atom, DefaultValue, selector, useRecoilCallback} from 'recoil';
-import {randomId} from 'shared/utils';
+import {defer, randomId} from 'shared/utils';
 
 const repositoryData = atom<{info: RepoInfo | undefined; cwd: string | undefined}>({
   key: 'repositoryData',
@@ -103,9 +102,27 @@ export const serverCwd = selector<string>({
   key: 'serverCwd',
   get: ({get}) => {
     const data = get(repositoryData);
+    if (data.info?.type === 'cwdNotARepository') {
+      return data.info.cwd;
+    }
     return data?.cwd ?? initialParams.get('cwd') ?? '';
   },
 });
+
+export async function forceFetchCommit(revset: string): Promise<CommitInfo> {
+  serverAPI.postMessage({
+    type: 'fetchLatestCommit',
+    revset,
+  });
+  const response = await serverAPI.nextMessageMatching(
+    'fetchedLatestCommit',
+    message => message.revset === revset,
+  );
+  if (response.info.error) {
+    throw response.info.error;
+  }
+  return response.info.value;
+}
 
 export const latestUncommittedChangesData = atom<{
   fetchStartTimestamp: number;
@@ -185,6 +202,13 @@ export const latestCommitsData = atom<{
   ],
 });
 
+export const latestUncommittedChangesTimestamp = selector<number>({
+  key: 'latestUncommittedChangesTimestamp',
+  get: ({get}) => {
+    return get(latestUncommittedChangesData).fetchCompletedTimestamp;
+  },
+});
+
 /**
  * Lookup a commit by hash, *WITHOUT PREVIEWS*.
  * Generally, you'd want to look up WITH previews, which you can use treeWithPreviews for.
@@ -202,6 +226,18 @@ export const latestCommits = selector<Array<CommitInfo>>({
   key: 'latestCommits',
   get: ({get}) => {
     return get(latestCommitsData).commits;
+  },
+});
+
+/** The dag also includes a mutationDag to answer successor queries. */
+export const latestDag = selector<Dag>({
+  key: 'latestDag',
+  get: ({get}) => {
+    const commits = get(latestCommits);
+    const successorMap = get(latestSuccessorsMap);
+    const commitDag = undefined; // will be populated from `commits`
+    const dag = Dag.fromDag(commitDag, successorMap).add(commits).forceConnectPublic();
+    return dag;
   },
 });
 
@@ -348,20 +384,6 @@ export const commitsShownRange = atom<number | undefined>({
 });
 
 /**
- * Latest fetched commit tree from the server, without any previews.
- * Prefer using `treeWithPreviews.trees`, since it includes optimistic state
- * and previews.
- */
-export const latestCommitTree = selector<Array<CommitTree>>({
-  key: 'latestCommitTree',
-  get: ({get}) => {
-    const commits = get(latestCommits);
-    const tree = getCommitTree(commits);
-    return tree;
-  },
-});
-
-/**
  * Latest head commit from original data from the server, without any previews.
  * Prefer using `treeWithPreviews.headCommit`, since it includes optimistic state
  * and previews.
@@ -371,26 +393,6 @@ export const latestHeadCommit = selector<CommitInfo | undefined>({
   get: ({get}) => {
     const commits = get(latestCommits);
     return commits.find(commit => commit.isHead);
-  },
-});
-
-/**
- * Mapping of commit hash -> subtree at that commit
- * Latest mapping of commit hash -> subtree at that commit from original data
- * from the server, without any previews.
- * Prefer using `treeWithPreviews.treeMap`, since it includes
- * optimistic state and previews.
- */
-export const latestCommitTreeMap = selector<Map<Hash, CommitTree>>({
-  key: 'latestCommitTreeMap',
-  get: ({get}) => {
-    const trees = get(latestCommitTree);
-    const map = new Map();
-    for (const tree of walkTreePostorder(trees)) {
-      map.set(tree.info.hash, tree);
-    }
-
-    return map;
   },
 });
 
@@ -592,6 +594,10 @@ export const operationList = atom<OperationList>({
                 return current;
               }
 
+              const complete = operationCompletionCallbacks.get(currentOperation.operation.id);
+              complete?.();
+              operationCompletionCallbacks.delete(currentOperation.operation.id);
+
               return {
                 ...current,
                 currentOperation: {
@@ -625,10 +631,13 @@ export const inlineProgressByHash = selectorFamily<string | undefined, string>({
     },
 });
 
-// We don't send entire operations to the server, since not all fields are serializable.
-// Thus, when the server tells us about the queue of operations, we need to know which operation it's talking about.
-// Store recently run operations by id. Add to this map whenever a new operation is run. Remove when an operation process exits (successfully or unsuccessfully)
+/** We don't send entire operations to the server, since not all fields are serializable.
+ * Thus, when the server tells us about the queue of operations, we need to know which operation it's talking about.
+ * Store recently run operations by id. Add to this map whenever a new operation is run. Remove when an operation process exits (successfully or unsuccessfully)
+ */
 const operationsById = new Map<string, Operation>();
+/** Store callbacks to run when an operation completes. This is stored outside of the operation since Operations are typically Immutable. */
+const operationCompletionCallbacks = new Map<string, () => void>();
 
 export const queuedOperations = atom<Array<Operation>>({
   key: 'queuedOperations',
@@ -671,7 +680,7 @@ function runOperationImpl(
   snapshot: CallbackInterface['snapshot'],
   set: CallbackInterface['set'],
   operation: Operation,
-) {
+): Promise<void> {
   // TODO: check for hashes in arguments that are known to be obsolete already,
   // and mark those to not be rewritten.
   serverAPI.postMessage({
@@ -684,8 +693,12 @@ function runOperationImpl(
       trackEventName: operation.trackEventName,
     },
   });
+  const defered = defer<void>();
+  operationCompletionCallbacks.set(operation.id, () => defered.resolve());
+
   operationsById.set(operation.id, operation);
   const ongoing = snapshot.getLoadable(operationList).valueMaybe();
+
   if (ongoing?.currentOperation != null && ongoing.currentOperation.exitCode == null) {
     const queue = snapshot.getLoadable(queuedOperations).valueMaybe();
     // Add to the queue optimistically. The server will tell us the real state of the queue when it gets our run request.
@@ -694,17 +707,23 @@ function runOperationImpl(
     // start a new operation. We need to manage the previous operations
     set(operationList, list => startNewOperation(operation, list));
   }
+
+  return defered.promise;
 }
 
 /**
  * Returns callback to run an operation.
  * Will be queued by the server if other operations are already running.
+ * This returns a promise that resolves when this operation has exited
+ * (though its optimistic state may not have finished resolving yet).
+ * Note: There's no need to wait for this promise to resolve before starting another operation,
+ * successive operations will queue up with a nicer UX than if you awaited each one.
  */
 export function useRunOperation() {
   return useRecoilCallback(
     ({snapshot, set}) =>
-      (operation: Operation) => {
-        runOperationImpl(snapshot, set, operation);
+      (operation: Operation): Promise<void> => {
+        return runOperationImpl(snapshot, set, operation);
       },
     [],
   );
@@ -740,13 +759,14 @@ export function useAbortRunningOperation() {
 export function useRunPreviewedOperation() {
   return useRecoilCallback(
     ({snapshot, set}) =>
-      (isCancel: boolean) => {
+      (isCancel: boolean, operation?: Operation) => {
         if (isCancel) {
           set(operationBeingPreviewed, undefined);
           return;
         }
 
-        const operationToRun = snapshot.getLoadable(operationBeingPreviewed).valueMaybe();
+        const operationToRun =
+          operation ?? snapshot.getLoadable(operationBeingPreviewed).valueMaybe();
         set(operationBeingPreviewed, undefined);
         if (operationToRun) {
           runOperationImpl(snapshot, set, operationToRun);

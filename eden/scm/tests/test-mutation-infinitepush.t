@@ -1,9 +1,7 @@
 #chg-compatible
 #require bash
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
 
-  $ disable treemanifest
   $ enable amend rebase histedit fbhistedit remotenames
   $ setconfig experimental.evolution=obsolete
   $ setconfig experimental.narrow-heads=true
@@ -14,8 +12,7 @@
   $ . "$TESTDIR/infinitepush/library.sh"
   $ cp $HGRCPATH $TESTTMP/defaulthgrc
   $ setupcommon
-  $ hg init repo
-  $ cd repo
+  $ newserver repo
   $ setupserver
   $ cd ..
   $ hg clone ssh://user@dummy/repo client -q
@@ -35,6 +32,8 @@ Amend the commit a couple of times and push to the scratch branch again
 Clone the repo again, and pull the scratch branch.
   $ cd ..
   $ hg clone ssh://user@dummy/repo client2 -q
+  fetching tree '' 4b17fc1185671dd0894412fdc3a15c72f0671bbe
+  1 trees fetched over 0.00s
   $ cd client2
   $ hg pull -q -B scratch/mybranch
 

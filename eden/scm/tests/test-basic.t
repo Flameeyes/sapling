@@ -2,37 +2,6 @@
 
 Create a repository:
 
-  $ hg config
-  commands.status.relative=True
-  config.use-rust=True
-  devel.all-warnings=True
-  devel.collapse-traceback=True
-  devel.default-date=0 0
-  experimental.use-rust-changelog=True
-  extensions.fsmonitor= (fsmonitor !)
-  extensions.treemanifest=
-  fsmonitor.detectrace=True (fsmonitor !)
-  hint.ack-match-full-traversal=True
-  mutation.record=False
-  remotefilelog.cachepath=$TESTTMP/default-hgcache
-  remotefilelog.localdatarepack=True
-  remotefilelog.reponame=reponame-default
-  scmstore.contentstorefallback=True
-  status.use-rust=True
-  treemanifest.rustmanifest=True
-  treemanifest.sendtrees=True
-  treemanifest.treeonly=True
-  treemanifest.useruststore=True
-  ui.ignore.test=$RUNTESTDIR/gitignore
-  ui.interactive=False
-  ui.mergemarkers=detailed
-  ui.promptecho=True
-  ui.slash=True
-  web.address=localhost
-  web\.ipv6=(?:True|False) (re)
-  workingcopy.ruststatus=True
-  workingcopy.use-rust=True
-
   $ configure modernclient
   $ newclientrepo t
 
@@ -50,9 +19,8 @@ Writes to stdio succeed and fail appropriately
   $ hg status 2>/dev/full
   A a
 
-FIXME(status):
-  $ hg status --config status.use-rust=false >/dev/full
-  abort: No space left on device
+  $ hg status >/dev/full
+  abort: error flushing command output: No space left on device (os error 28)
   [255]
 #endif
 
@@ -69,9 +37,8 @@ Commands can succeed without a stdin
   $ hg status >/dev/full 2>&1
   [255]
 
-FIXME(status):
-  $ hg status ENOENT --config workingcopy.ruststatus=false 2>/dev/full
-  [1]
+  $ hg status ENOENT 2>/dev/full
+  [255]
 #endif
 
 #if devfull chg
@@ -96,7 +63,7 @@ This command is ancient:
 Verify that updating to revision acb14030fe0a via commands.update() works properly
 
   $ cat <<EOF > update_to_rev0.py
-  > from edenscm import ui, hg, commands
+  > from sapling import ui, hg, commands
   > myui = ui.ui.load()
   > repo = hg.repository(myui, path='.')
   > commands.update(myui, repo, rev='acb14030fe0a')

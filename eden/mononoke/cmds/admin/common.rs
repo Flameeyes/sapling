@@ -25,7 +25,7 @@ use futures::TryStreamExt;
 use manifest::ManifestOps;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgFileNodeId;
-use mercurial_types::MPath;
+use mercurial_types::NonRootMPath;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::DateTime;
 use mononoke_types::FileChange;
@@ -116,13 +116,14 @@ pub async fn get_file_nodes(
     logger: Logger,
     repo: &BlobRepo,
     cs_id: HgChangesetId,
-    paths: Vec<MPath>,
+    paths: Vec<NonRootMPath>,
 ) -> Result<Vec<HgFileNodeId>, Error> {
     let cs = cs_id.load(&ctx, repo.repo_blobstore()).await?;
     let root_mf_id = cs.manifestid().clone();
     let manifest_entries: HashMap<_, _> = root_mf_id
         .find_entries(ctx, repo.repo_blobstore().clone(), paths.clone())
         .try_filter_map(|(path, entry)| async move {
+            let path: Option<NonRootMPath> = path.into();
             let result =
                 path.and_then(move |path| entry.into_leaf().map(move |leaf| (path, leaf.1)));
             Ok(result)
@@ -175,7 +176,8 @@ where
         fb,
         config_store,
         matches,
-    )?;
+    )
+    .await?;
 
     Ok((source_repo, target_repo, mapping))
 }

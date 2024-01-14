@@ -6,11 +6,13 @@
  */
 
 import {BugButton} from './BugButton';
+import {BulkActionsMenu} from './BulkActionsMenu';
 import serverAPI from './ClientToServerAPI';
 import {CwdSelector} from './CwdSelector';
 import {DownloadCommitsTooltipButton} from './DownloadCommitsMenu';
 import {PullButton} from './PullButton';
 import {SettingsGearButton} from './SettingsTooltip';
+import {ShelvedChangesMenu} from './ShelvedChanges';
 import {DOCUMENTATION_DELAY, Tooltip} from './Tooltip';
 import {tracker} from './analytics';
 import {DebugToolsButton} from './debug/DebugToolsButton';
@@ -39,6 +41,8 @@ export function TopBar() {
         {canPush && <PullButton />}
         <CwdSelector />
         <DownloadCommitsTooltipButton />
+        <ShelvedChangesMenu />
+        <BulkActionsMenu />
         <FetchingDataIndicator />
       </span>
       <span className="button-group">

@@ -1,9 +1,7 @@
 #debugruntest-compatible
 #inprocess-hg-incompatible
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
 
-  $ disable treemanifest
   $ hg init test
   $ cd test
   $ echo foo>foo
@@ -58,7 +56,7 @@ update with worker processes
 #if no-windows
 
   $ cat <<EOF > forceworker.py
-  > from edenscm import extensions, worker
+  > from sapling import extensions, worker
   > def nocost(orig, ui, costperop, nops):
   >     return worker._numworkers(ui) > 1
   > def uisetup(ui):

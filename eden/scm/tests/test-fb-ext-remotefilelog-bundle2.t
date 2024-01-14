@@ -1,7 +1,5 @@
 #chg-compatible
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
-
 
   $ . "$TESTDIR/library.sh"
 
@@ -12,7 +10,7 @@
 preferuncompressed = False so that we can make both generaldelta and non-generaldelta clones
   $ cat >> .hg/hgrc <<EOF
   > [extensions]
-  > treemanifest=$TESTDIR/../edenscm/ext/treemanifestserver.py
+  > treemanifest=$TESTDIR/../sapling/ext/treemanifestserver.py
   > [remotefilelog]
   > server=True
   > [experimental]

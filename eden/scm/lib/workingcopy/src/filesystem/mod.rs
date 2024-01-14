@@ -5,11 +5,10 @@
  * GNU General Public License version 2.
  */
 
-mod pendingchanges;
+mod filesystem;
 
-pub use pendingchanges::ChangeType;
-pub use pendingchanges::PendingChangeResult;
-pub use pendingchanges::PendingChanges;
+pub use filesystem::FileSystem;
+pub use filesystem::PendingChange;
 
 #[derive(PartialEq)]
 pub enum FileSystemType {

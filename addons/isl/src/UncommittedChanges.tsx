@@ -5,32 +5,43 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import type {CommitMessageFields} from './CommitInfoView/types';
 import type {UseUncommittedSelection} from './partialSelection';
-import type {PathTree} from './pathTree';
 import type {ChangedFile, ChangedFileType, MergeConflicts, RepoRelativePath} from './types';
-import type {MutableRefObject} from 'react';
+import type {MutableRefObject, ReactNode} from 'react';
 import type {Comparison} from 'shared/Comparison';
 
+import {Banner, BannerKind} from './Banner';
 import {
   ChangedFileDisplayTypePicker,
   type ChangedFilesDisplayType,
   changedFilesDisplayType,
 } from './ChangedFileDisplayTypePicker';
-import serverAPI from './ClientToServerAPI';
+import {Collapsable} from './Collapsable';
 import {
-  commitFieldsBeingEdited,
+  commitMessageTemplate,
   commitMode,
   editedCommitMessages,
+  forceNextCommitToEditAllFields,
 } from './CommitInfoView/CommitInfoState';
 import {
-  allFieldsBeingEdited,
   commitMessageFieldsSchema,
+  commitMessageFieldsToString,
 } from './CommitInfoView/CommitMessageFields';
+import {temporaryCommitTitle} from './CommitTitle';
 import {OpenComparisonViewButton} from './ComparisonView/OpenComparisonViewButton';
 import {ErrorNotice} from './ErrorNotice';
-import {PartialFileSelection} from './PartialFileSelection';
+import {FileTree, FileTreeFolderHeader} from './FileTree';
+import {
+  generatedStatusToLabel,
+  generatedStatusDescription,
+  useGeneratedFileStatuses,
+} from './GeneratedFile';
+import {Internal} from './Internal';
+import {PartialFileSelectionWithMode} from './PartialFileSelection';
 import {SuspenseBoundary} from './SuspenseBoundary';
 import {DOCUMENTATION_DELAY, Tooltip} from './Tooltip';
+import {latestCommitMessageFields} from './codeReview/CodeReviewInfo';
 import {islDrawerState} from './drawerState';
 import {T, t} from './i18n';
 import {AbortMergeOperation} from './operations/AbortMergeOperation';
@@ -44,8 +55,8 @@ import {ForgetOperation} from './operations/ForgetOperation';
 import {PurgeOperation} from './operations/PurgeOperation';
 import {ResolveOperation, ResolveTool} from './operations/ResolveOperation';
 import {RevertOperation} from './operations/RevertOperation';
+import {getShelveOperation} from './operations/ShelveOperation';
 import {useUncommittedSelection} from './partialSelection';
-import {buildPathTree} from './pathTree';
 import platform from './platform';
 import {
   optimisticMergeConflicts,
@@ -54,26 +65,62 @@ import {
 } from './previews';
 import {selectedCommits} from './selection';
 import {
-  hasExperimentalFeatures,
   latestHeadCommit,
   operationList,
   uncommittedChangesFetchError,
   useRunOperation,
 } from './serverAPIState';
+import {succeedableRevset, GeneratedStatus} from './types';
 import {usePromise} from './usePromise';
-import {VSCodeButton, VSCodeCheckbox, VSCodeTextField} from '@vscode/webview-ui-toolkit/react';
-import React, {useRef, useState} from 'react';
-import {useRecoilCallback, useRecoilValue} from 'recoil';
+import {
+  VSCodeBadge,
+  VSCodeButton,
+  VSCodeCheckbox,
+  VSCodeTextField,
+} from '@vscode/webview-ui-toolkit/react';
+import React, {useMemo, useEffect, useRef, useState} from 'react';
+import {atom, useRecoilCallback, useRecoilValue} from 'recoil';
 import {labelForComparison, revsetForComparison, ComparisonType} from 'shared/Comparison';
 import {useContextMenu} from 'shared/ContextMenu';
 import {Icon} from 'shared/Icon';
+import {isMac} from 'shared/OperatingSystem';
 import {useDeepMemo} from 'shared/hooks';
 import {minimalDisambiguousPaths} from 'shared/minimalDisambiguousPaths';
-import {basename, notEmpty} from 'shared/utils';
+import {basename, group, notEmpty, partition} from 'shared/utils';
 
 import './UncommittedChanges.css';
 
-type UIChangedFile = {
+const platformAltKey = (e: KeyboardEvent) => (isMac ? e.altKey : e.ctrlKey);
+/**
+ * Is the alt key currently held down, used to show full file paths.
+ * On windows, this actually uses the ctrl key instead to avoid conflicting with OS focus behaviors.
+ */
+const holdingAltAtom = atom<boolean>({
+  key: 'holdingAltAtom',
+  default: false,
+  effects: [
+    ({setSelf}) => {
+      const keydown = (e: KeyboardEvent) => {
+        if (platformAltKey(e)) {
+          setSelf(true);
+        }
+      };
+      const keyup = (e: KeyboardEvent) => {
+        if (!platformAltKey(e)) {
+          setSelf(false);
+        }
+      };
+      document.addEventListener('keydown', keydown);
+      document.addEventListener('keyup', keyup);
+      return () => {
+        document.removeEventListener('keydown', keydown);
+        document.removeEventListener('keyup', keyup);
+      };
+    },
+  ],
+});
+
+export type UIChangedFile = {
   path: RepoRelativePath;
   // disambiguated path, or rename with arrow
   label: string;
@@ -152,20 +199,191 @@ const sortKeyForStatus: Record<VisualChangedFileType, number> = {
   Resolved: 8,
 };
 
+type SectionProps = Omit<React.ComponentProps<typeof LinearFileList>, 'files'> & {
+  filesByPrefix: Map<string, Array<UIChangedFile>>;
+};
+
+function SectionedFileList({filesByPrefix, ...rest}: SectionProps) {
+  const [collapsedSections, setCollapsedSections] = useState(new Set<string>());
+  return (
+    <div className="file-tree">
+      {Array.from(filesByPrefix.entries(), ([prefix, files]) => {
+        const isCollapsed = collapsedSections.has(prefix);
+        return (
+          <div className="file-tree-section" key={prefix}>
+            <FileTreeFolderHeader
+              isCollapsed={isCollapsed}
+              toggleCollapsed={() =>
+                setCollapsedSections(previous =>
+                  previous.has(prefix)
+                    ? new Set(Array.from(previous).filter(e => e !== prefix))
+                    : new Set(Array.from(previous).concat(prefix)),
+                )
+              }
+              folder={prefix}
+            />
+            {!isCollapsed ? <LinearFileList {...rest} files={files} /> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Display a list of changed files.
+ *
+ * (Case 1) If filesSubset is too long, but filesSubset.length === totalFiles, pagination buttons
+ * are shown. This happens for uncommitted changes, where we have the entire list of files.
+ *
+ * (Case 2) If filesSubset.length < totalFiles, no pagination buttons are shown.
+ * It's expected that filesSubset is already truncated to fit.
+ * This happens initially for committed lists of changes, where we don't have the entire list of files.
+ * Note that we later fetch the remaining files, to end up in (Case 1) again.
+ *
+ * In either case, a banner is shown to warn that not all files are shown.
+ */
 export function ChangedFiles(props: {
-  files: Array<ChangedFile>;
+  filesSubset: Array<ChangedFile>;
+  totalFiles: number;
   comparison: Comparison;
   selection?: UseUncommittedSelection;
+  place?: Place;
 }) {
   const displayType = useRecoilValue(changedFilesDisplayType);
-  const {files, ...rest} = props;
-  const processedFiles = useDeepMemo(() => processCopiesAndRenames(files), [files]);
+  const {filesSubset, totalFiles, ...rest} = props;
+  const PAGE_SIZE = 500;
+  const PAGE_FETCH_COUNT = 2;
+  const [pageNum, setPageNum] = useState(0);
+  const isLastPage = pageNum >= Math.floor((totalFiles - 1) / PAGE_SIZE);
+  const rangeStart = pageNum * PAGE_SIZE;
+  const rangeEnd = Math.min(filesSubset.length, (pageNum + 1) * PAGE_SIZE);
+  const hasAdditionalPages = filesSubset.length > PAGE_SIZE;
+
+  // We paginate files, but also paginate our fetches for generated statuses
+  // at a larger granularity. This allows all manual files within that window
+  // to be sorted to the front. This wider pagination is neceessary so we can control
+  // how many files we query for generated statuses.
+  const fetchPage = Math.floor(pageNum - (pageNum % PAGE_FETCH_COUNT));
+  const fetchRangeStart = fetchPage * PAGE_SIZE;
+  const fetchRangeEnd = (fetchPage + PAGE_FETCH_COUNT) * PAGE_SIZE;
+  const filesToQueryGeneratedStatus = useMemo(
+    () => filesSubset.slice(fetchRangeStart, fetchRangeEnd).map(f => f.path),
+    [filesSubset, fetchRangeStart, fetchRangeEnd],
+  );
+
+  const generatedStatuses = useGeneratedFileStatuses(filesToQueryGeneratedStatus);
+  const filesToSort = filesSubset.slice(fetchRangeStart, fetchRangeEnd);
+  filesToSort.sort((a, b) => {
+    const genStatA = generatedStatuses[a.path] ?? 0;
+    const genStatB = generatedStatuses[b.path] ?? 0;
+    return genStatA - genStatB;
+  });
+  const filesToShow = filesToSort.slice(rangeStart - fetchRangeStart, rangeEnd - fetchRangeStart);
+  const processedFiles = useDeepMemo(() => processCopiesAndRenames(filesToShow), [filesToShow]);
+
+  const prefixes: {key: string; prefix: string}[] = useMemo(
+    () => Internal.repoPrefixes ?? [{key: 'default', prefix: ''}],
+    [],
+  );
+  const firstNonDefaultPrefix = prefixes.find(
+    p => p.prefix.length > 0 && filesToSort.some(f => f.path.indexOf(p.prefix) === 0),
+  );
+  const shouldShowRepoHeaders =
+    prefixes.length > 1 &&
+    firstNonDefaultPrefix != null &&
+    filesToSort.find(f => f.path.indexOf(firstNonDefaultPrefix?.prefix) === -1) != null;
+
+  const filesByPrefix = new Map<string, Array<UIChangedFile>>();
+  for (const file of processedFiles) {
+    for (const {key, prefix} of prefixes) {
+      if (file.path.indexOf(prefix) === 0) {
+        if (!filesByPrefix.has(key)) {
+          filesByPrefix.set(key, []);
+        }
+        filesByPrefix.get(key)?.push(file);
+        break;
+      }
+    }
+  }
+
+  useEffect(() => {
+    // If the list of files is updated to have fewer files, we need to reset
+    // the pageNum state to be in the proper range again.
+    const lastPageIndex = Math.floor((totalFiles - 1) / PAGE_SIZE);
+    if (pageNum > lastPageIndex) {
+      setPageNum(Math.max(0, lastPageIndex));
+    }
+  }, [totalFiles, pageNum]);
+
   return (
-    <div className="changed-files">
+    <div className="changed-files" data-testid="changed-files">
+      {totalFiles > filesToShow.length ? (
+        <Banner
+          key={'alert'}
+          icon={<Icon icon="info" />}
+          buttons={
+            hasAdditionalPages ? (
+              <div className="changed-files-pages-buttons">
+                <Tooltip title={t('See previous page of files')}>
+                  <VSCodeButton
+                    data-testid="changed-files-previous-page"
+                    appearance="icon"
+                    disabled={pageNum === 0}
+                    onClick={() => {
+                      setPageNum(old => old - 1);
+                    }}>
+                    <Icon icon="arrow-left" />
+                  </VSCodeButton>
+                </Tooltip>
+                <Tooltip title={t('See next page of files')}>
+                  <VSCodeButton
+                    data-testid="changed-files-next-page"
+                    appearance="icon"
+                    disabled={isLastPage}
+                    onClick={() => {
+                      setPageNum(old => old + 1);
+                    }}>
+                    <Icon icon="arrow-right" />
+                  </VSCodeButton>
+                </Tooltip>
+              </div>
+            ) : null
+          }>
+          {pageNum === 0 ? (
+            <T replace={{$numShown: filesToShow.length, $total: totalFiles}}>
+              Showing first $numShown files out of $total total
+            </T>
+          ) : (
+            <T replace={{$rangeStart: rangeStart + 1, $rangeEnd: rangeEnd, $total: totalFiles}}>
+              Showing files $rangeStart – $rangeEnd out of $total total
+            </T>
+          )}
+        </Banner>
+      ) : null}
+      {totalFiles > PAGE_SIZE * PAGE_FETCH_COUNT && (
+        <Banner key="too-many-files" icon={<Icon icon="warning" />} kind={BannerKind.warning}>
+          <T replace={{$maxFiles: PAGE_SIZE * PAGE_FETCH_COUNT}}>
+            There are more than $maxFiles files, some files may appear out of order
+          </T>
+        </Banner>
+      )}
       {displayType === 'tree' ? (
         <FileTree {...rest} files={processedFiles} displayType={displayType} />
+      ) : shouldShowRepoHeaders ? (
+        <SectionedFileList
+          {...rest}
+          filesByPrefix={filesByPrefix}
+          displayType={displayType}
+          generatedStatuses={generatedStatuses}
+        />
       ) : (
-        <LinearFileList {...rest} files={processedFiles} displayType={displayType} />
+        <LinearFileList
+          {...rest}
+          files={processedFiles}
+          displayType={displayType}
+          generatedStatuses={generatedStatuses}
+        />
       )}
     </div>
   );
@@ -174,88 +392,78 @@ export function ChangedFiles(props: {
 function LinearFileList(props: {
   files: Array<UIChangedFile>;
   displayType: ChangedFilesDisplayType;
+  generatedStatuses: Record<RepoRelativePath, GeneratedStatus>;
   comparison: Comparison;
   selection?: UseUncommittedSelection;
+  place?: Place;
 }) {
-  const {files, ...rest} = props;
+  const {files, generatedStatuses, ...rest} = props;
 
-  return (
-    <>
-      {files.map(file => (
-        <File key={file.path} {...rest} file={file} />
-      ))}
-    </>
-  );
-}
+  const groupedByGenerated = group(files, file => generatedStatuses[file.path]);
 
-function FileTree(props: {
-  files: Array<UIChangedFile>;
-  displayType: ChangedFilesDisplayType;
-  comparison: Comparison;
-  selection?: UseUncommittedSelection;
-}) {
-  const {files, ...rest} = props;
-
-  const tree = useDeepMemo(
-    () => buildPathTree(Object.fromEntries(files.map(file => [file.path, file]))),
-    [files],
-  );
-
-  const [collapsed, setCollapsed] = useState(new Set());
-
-  function renderTree(tree: PathTree<UIChangedFile>, accumulatedPath = '') {
+  function GeneratedFilesCollapsableSection(status: GeneratedStatus) {
+    const group = groupedByGenerated[status] ?? [];
+    if (group.length === 0) {
+      return null;
+    }
     return (
-      <>
-        {[...tree.entries()].map(([folder, inner]) => {
-          const folderKey = `${accumulatedPath}/${folder}`;
-          const isCollapsed = collapsed.has(folderKey);
-          return (
-            <div className="file-tree-level" key={folderKey}>
-              {inner instanceof Map ? (
-                <>
-                  <span className="file-tree-folder-path">
-                    <VSCodeButton
-                      appearance="icon"
-                      onClick={() => {
-                        setCollapsed(last =>
-                          isCollapsed
-                            ? new Set([...last].filter(v => v !== folderKey))
-                            : new Set([...last, folderKey]),
-                        );
-                      }}>
-                      <Icon icon={isCollapsed ? 'chevron-right' : 'chevron-down'} slot="start" />
-                      {folder}
-                    </VSCodeButton>
-                  </span>
-                  {isCollapsed ? null : renderTree(inner, folderKey)}
-                </>
-              ) : (
-                <File key={inner.path} {...rest} file={inner} />
-              )}
-            </div>
-          );
-        })}
-      </>
+      <Collapsable
+        title={
+          <T
+            replace={{
+              $count: <VSCodeBadge>{group.length}</VSCodeBadge>,
+            }}>
+            {status === GeneratedStatus.PartiallyGenerated
+              ? 'Partially Generated Files $count'
+              : 'Generated Files $count'}
+          </T>
+        }
+        startExpanded={status === GeneratedStatus.PartiallyGenerated}>
+        {group.map(file => (
+          <File key={file.path} {...rest} file={file} generatedStatus={status} />
+        ))}
+      </Collapsable>
     );
   }
 
-  return renderTree(tree);
+  return (
+    <div className="changed-files-list-container">
+      <div className="changed-files-list">
+        {groupedByGenerated[GeneratedStatus.Manual]?.map(file => (
+          <File
+            key={file.path}
+            {...rest}
+            file={file}
+            generatedStatus={generatedStatuses[file.path] ?? GeneratedStatus.Manual}
+          />
+        ))}
+        {GeneratedFilesCollapsableSection(GeneratedStatus.PartiallyGenerated)}
+        {GeneratedFilesCollapsableSection(GeneratedStatus.Generated)}
+      </div>
+    </div>
+  );
 }
 
-function File({
+export function File({
   file,
   displayType,
   comparison,
   selection,
+  place,
+  generatedStatus,
 }: {
   file: UIChangedFile;
   displayType: ChangedFilesDisplayType;
   comparison: Comparison;
   selection?: UseUncommittedSelection;
+  place?: Place;
+  generatedStatus?: GeneratedStatus;
 }) {
   // Renamed files are files which have a copy field, where that path was also removed.
   // Visually show renamed files as if they were modified, even though sl treats them as added.
   const [statusName, icon] = nameAndIconForFileStatus[file.visualStatus];
+
+  const generated = generatedStatusToLabel(generatedStatus);
 
   const contextMenu = useContextMenu(() => {
     const options = [
@@ -263,6 +471,12 @@ function File({
       {label: t('Copy Filename'), onClick: () => platform.clipboardCopy(basename(file.path))},
       {label: t('Open File'), onClick: () => platform.openFile(file.path)},
     ];
+    if (platform.openContainingFolder != null) {
+      options.push({
+        label: t('Open Containing Folder'),
+        onClick: () => platform.openContainingFolder?.(file.path),
+      });
+    }
     if (platform.openDiff != null) {
       options.push({
         label: t('Open Diff View ($comparison)', {
@@ -274,43 +488,80 @@ function File({
     return options;
   });
 
+  // Hold "alt" key to show full file paths instead of short form.
+  // This is a quick way to see where a file comes from without
+  // needing to go through the menu to change the rendering type.
+  const isHoldingAlt = useRecoilValue(holdingAltAtom);
+
+  const tooltip = file.tooltip + '\n\n' + generatedStatusDescription(generatedStatus);
+
   return (
-    <div
-      className={`changed-file file-${statusName}`}
-      data-testid={`changed-file-${file.path}`}
-      onContextMenu={contextMenu}
-      key={file.path}
-      tabIndex={0}
-      onKeyPress={e => {
-        if (e.key === 'Enter') {
-          platform.openFile(file.path);
-        }
-      }}>
-      <FileSelectionCheckbox file={file} selection={selection} />
-      <span
-        className="changed-file-path"
-        onClick={() => {
-          platform.openFile(file.path);
+    <>
+      <div
+        className={`changed-file file-${statusName} file-${generated}`}
+        data-testid={`changed-file-${file.path}`}
+        onContextMenu={contextMenu}
+        key={file.path}
+        tabIndex={0}
+        onKeyPress={e => {
+          if (e.key === 'Enter') {
+            platform.openFile(file.path);
+          }
         }}>
-        <Icon icon={icon} />
-        <Tooltip title={file.tooltip} delayMs={2_000} placement="right">
-          <span className="changed-file-path-text">
-            {displayType === 'fish'
-              ? file.path
-                  .split('/')
-                  .map((a, i, arr) => (i === arr.length - 1 ? a : a[0]))
-                  .join('/')
-              : displayType === 'fullPaths'
-              ? file.path
-              : displayType === 'tree'
-              ? file.path.slice(file.path.lastIndexOf('/') + 1)
-              : file.label}
-          </span>
-        </Tooltip>
-      </span>
-      <FileActions file={file} comparison={comparison} />
-    </div>
+        <FileSelectionCheckbox file={file} selection={selection} />
+        <span
+          className="changed-file-path"
+          onClick={() => {
+            platform.openFile(file.path);
+          }}>
+          <Icon icon={icon} />
+          <Tooltip title={tooltip} delayMs={2_000} placement="right">
+            <span
+              className="changed-file-path-text"
+              onCopy={e => {
+                const selection = document.getSelection();
+                if (selection) {
+                  // we inserted LTR markers, remove them again on copy
+                  e.clipboardData.setData(
+                    'text/plain',
+                    selection.toString().replace(/\u200E/g, ''),
+                  );
+                  e.preventDefault();
+                }
+              }}>
+              {escapeForRTL(
+                displayType === 'tree'
+                  ? file.path.slice(file.path.lastIndexOf('/') + 1)
+                  : // Holding alt takes precedence over fish/short styles, but not tree.
+                  displayType === 'fullPaths' || isHoldingAlt
+                  ? file.path
+                  : displayType === 'fish'
+                  ? file.path
+                      .split('/')
+                      .map((a, i, arr) => (i === arr.length - 1 ? a : a[0]))
+                      .join('/')
+                  : file.label,
+              )}
+            </span>
+          </Tooltip>
+        </span>
+        <FileActions file={file} comparison={comparison} place={place} />
+      </div>
+      {place === 'main' && selection?.isExpanded(file.path) && (
+        <MaybePartialSelection file={file} />
+      )}
+    </>
   );
+}
+
+/**
+ * We render file paths with CSS text-direction: rtl,
+ * which allows the ellipsis overflow to appear on the left.
+ * However, rtl can have weird effects, such as moving leading '.' to the end.
+ * To fix this, it's enough to add a left-to-right marker at the start of the path
+ */
+function escapeForRTL(s: string): ReactNode {
+  return '\u200E' + s + '\u200E';
 }
 
 function FileSelectionCheckbox({
@@ -324,6 +575,7 @@ function FileSelectionCheckbox({
     <VSCodeCheckbox
       checked={selection.isFullyOrPartiallySelected(file.path)}
       indeterminate={selection.isPartiallySelected(file.path)}
+      data-testid={'file-selection-checkbox'}
       // Note: Using `onClick` instead of `onChange` since onChange apparently fires when the controlled `checked` value changes,
       // which means this fires when using "select all" / "deselect all"
       onClick={e => {
@@ -348,12 +600,15 @@ function FileSelectionCheckbox({
   );
 }
 
-export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | 'commit sidebar'}) {
+export type Place = 'main' | 'amend sidebar' | 'commit sidebar';
+
+export function UncommittedChanges({place}: {place: Place}) {
   const uncommittedChanges = useRecoilValue(uncommittedChangesWithPreviews);
   const error = useRecoilValue(uncommittedChangesFetchError);
   // TODO: use treeWithPreviews instead, and update CommitOperation
   const headCommit = useRecoilValue(latestHeadCommit);
   const schema = useRecoilValue(commitMessageFieldsSchema);
+  const template = useRecoilValue(commitMessageTemplate);
 
   const conflicts = useRecoilValue(optimisticMergeConflicts);
 
@@ -362,42 +617,67 @@ export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | '
 
   const runOperation = useRunOperation();
 
-  const openCommitForm = useRecoilCallback(({set, reset}) => (which: 'commit' | 'amend') => {
-    // make sure view is expanded
-    set(islDrawerState, val => ({...val, right: {...val.right, collapsed: false}}));
+  const openCommitForm = useRecoilCallback(
+    ({set, reset, snapshot}) =>
+      (which: 'commit' | 'amend') => {
+        // make sure view is expanded
+        set(islDrawerState, val => ({...val, right: {...val.right, collapsed: false}}));
 
-    // show head commit & set to correct mode
-    reset(selectedCommits);
-    set(commitMode, which);
+        // show head commit & set to correct mode
+        reset(selectedCommits);
+        set(commitMode, which);
 
-    // Start editing fields when amending so you can go right into typing.
-    if (which === 'amend') {
-      set(commitFieldsBeingEdited, {
-        ...allFieldsBeingEdited(schema),
-        // we have to explicitly keep this change to fieldsBeingEdited because otherwise it would be reset by effects.
-        forceWhileOnHead: true,
-      });
-    }
+        // Start editing fields when amending so you can go right into typing.
+        if (which === 'amend') {
+          set(forceNextCommitToEditAllFields, true);
+          if (headCommit != null) {
+            const latestMessage = snapshot
+              .getLoadable(latestCommitMessageFields(headCommit.hash))
+              .valueMaybe();
+            if (latestMessage) {
+              set(editedCommitMessages(headCommit.hash), {
+                fields: {...latestMessage},
+              });
+            }
+          }
+        }
 
-    const quickCommitTyped = commitTitleRef.current?.value;
-    if (which === 'commit' && quickCommitTyped != null && quickCommitTyped != '') {
-      set(editedCommitMessages('head'), value => ({
-        ...value,
-        fields: {...value.fields, Title: quickCommitTyped},
-      }));
-      // delete what was written in the quick commit form
-      commitTitleRef.current != null && (commitTitleRef.current.value = '');
-    }
-  });
+        const quickCommitTyped = commitTitleRef.current?.value;
+        if (which === 'commit' && quickCommitTyped != null && quickCommitTyped != '') {
+          set(editedCommitMessages('head'), value => ({
+            ...value,
+            fields: {...value.fields, Title: quickCommitTyped},
+          }));
+          // delete what was written in the quick commit form
+          commitTitleRef.current != null && (commitTitleRef.current.value = '');
+        }
+      },
+  );
+
+  const onConfirmQuickCommit = () => {
+    const title =
+      (commitTitleRef.current as HTMLInputElement | null)?.value ||
+      template?.fields.Title ||
+      temporaryCommitTitle();
+    // use the template, unless a specific quick title is given
+    const fields: CommitMessageFields = {...template?.fields, Title: title};
+    const message = commitMessageFieldsToString(schema, fields);
+    const hash = headCommit?.hash ?? '.';
+    const allFiles = uncommittedChanges.map(file => file.path);
+    const operation = getCommitOperation(message, hash, selection.selection, allFiles);
+    selection.discardPartialSelections();
+    runOperation(operation);
+  };
 
   if (error) {
     return <ErrorNotice title={t('Failed to fetch Uncommitted Changes')} error={error} />;
   }
-  if (uncommittedChanges.length === 0) {
+  if (uncommittedChanges.length === 0 && conflicts == null) {
     return null;
   }
   const allFilesSelected = selection.isEverythingSelected();
   const noFilesSelected = selection.isNothingSelected();
+  const hasChunkSelection = selection.hasChunkSelection();
 
   const allConflictsResolved =
     conflicts?.files?.every(conflict => conflict.status === 'Resolved') ?? false;
@@ -430,16 +710,10 @@ export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | '
     </Tooltip>
   ) : null;
 
-  const onConfirmQuickCommit = () => {
-    const title =
-      (commitTitleRef.current as HTMLInputElement | null)?.value || t('Temporary Commit');
-    const hash = headCommit?.hash ?? '.';
+  const onShelve = () => {
+    const title = (commitTitleRef.current as HTMLInputElement | null)?.value || undefined;
     const allFiles = uncommittedChanges.map(file => file.path);
-    const operation = getCommitOperation(title, hash, selection.selection, allFiles);
-    // TODO(quark): We need better invalidation for chunk selected files.
-    if (selection.hasChunkSelection()) {
-      selection.clear();
-    }
+    const operation = getShelveOperation(title, selection.selection, allFiles);
     runOperation(operation);
   };
 
@@ -508,11 +782,8 @@ export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | '
               <VSCodeButton
                 appearance="icon"
                 disabled={noFilesSelected}
+                data-testid={'discard-all-selected-button'}
                 onClick={() => {
-                  // TODO(quark): [Discard] does not work for partial selection yet.
-                  const selectedFiles = uncommittedChanges
-                    .filter(file => selection.isFullyOrPartiallySelected(file.path))
-                    .map(file => file.path);
                   platform.confirm(t('confirmDiscardChanges')).then(ok => {
                     if (!ok) {
                       return;
@@ -529,10 +800,24 @@ export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | '
                       // TODO(quark): Make PartialDiscardOperation replace the above and below cases.
                       const allFiles = uncommittedChanges.map(file => file.path);
                       const operation = new PartialDiscardOperation(selection.selection, allFiles);
+                      selection.discardPartialSelections();
                       runOperation(operation);
                     } else {
-                      // only a subset of files selected -> we need to revert selected files individually
-                      runOperation(new RevertOperation(selectedFiles));
+                      const selectedFiles = uncommittedChanges.filter(file =>
+                        selection.isFullyOrPartiallySelected(file.path),
+                      );
+                      const [selectedTrackedFiles, selectedUntrackedFiles] = partition(
+                        selectedFiles,
+                        file => file.status !== '?', // only untracked, not missing
+                      );
+                      if (selectedTrackedFiles.length > 0) {
+                        // only a subset of files selected -> we need to revert selected tracked files individually
+                        runOperation(new RevertOperation(selectedTrackedFiles.map(f => f.path)));
+                      }
+                      if (selectedUntrackedFiles.length > 0) {
+                        // untracked files must be purged separately to delete from disk
+                        runOperation(new PurgeOperation(selectedUntrackedFiles.map(f => f.path)));
+                      }
                     }
                   });
                 }}>
@@ -545,14 +830,18 @@ export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | '
       </div>
       {conflicts != null ? (
         <ChangedFiles
-          files={conflicts.files ?? []}
+          filesSubset={conflicts.files ?? []}
+          totalFiles={conflicts.files?.length ?? 0}
+          place={place}
           comparison={{
             type: ComparisonType.UncommittedChanges,
           }}
         />
       ) : (
         <ChangedFiles
-          files={uncommittedChanges}
+          filesSubset={uncommittedChanges}
+          totalFiles={uncommittedChanges.length}
+          place={place}
           selection={selection}
           comparison={{
             type: ComparisonType.UncommittedChanges,
@@ -591,6 +880,19 @@ export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | '
               <Icon slot="start" icon="edit" />
               <T>Commit as...</T>
             </VSCodeButton>
+            <Tooltip
+              title={t(
+                'Save selected uncommitted changes for later unshelving. Removes these changes from the working copy.',
+              )}>
+              <VSCodeButton
+                disabled={noFilesSelected || hasChunkSelection}
+                appearance="icon"
+                className="show-on-hover"
+                onClick={onShelve}>
+                <Icon slot="start" icon="archive" />
+                <T>Shelve</T>
+              </VSCodeButton>
+            </Tooltip>
           </div>
           {headCommit?.phase === 'public' ? null : (
             <div className="button-row">
@@ -607,10 +909,7 @@ export function UncommittedChanges({place}: {place: 'main' | 'amend sidebar' | '
                     selection.selection,
                     allFiles,
                   );
-                  // TODO(quark): We need better invalidation for chunk selected files.
-                  if (selection.hasChunkSelection()) {
-                    selection.clear();
-                  }
+                  selection.discardPartialSelections();
                   runOperation(operation);
                 }}>
                 <Icon slot="start" icon="debug-step-into" />
@@ -686,20 +985,27 @@ function MergeConflictButtons({
 
 const revertableStatues = new Set(['M', 'R', '!']);
 const conflictStatuses = new Set<ChangedFileType>(['U', 'Resolved']);
-function FileActions({comparison, file}: {comparison: Comparison; file: UIChangedFile}) {
+function FileActions({
+  comparison,
+  file,
+  place,
+}: {
+  comparison: Comparison;
+  file: UIChangedFile;
+  place?: Place;
+}) {
   const runOperation = useRunOperation();
-  const hasExperimental = useRecoilValue(hasExperimentalFeatures);
   const conflicts = useRecoilValue(optimisticMergeConflicts);
 
   const actions: Array<React.ReactNode> = [];
 
   if (platform.openDiff != null && !conflictStatuses.has(file.status)) {
     actions.push(
-      <Tooltip title={t('Open diff view')} key="revert" delayMs={1000}>
+      <Tooltip title={t('Open diff view')} key="open-diff-view" delayMs={1000}>
         <VSCodeButton
           className="file-show-on-hover"
           appearance="icon"
-          data-testid="file-revert-button"
+          data-testid="file-open-diff-button"
           onClick={() => {
             platform.openDiff?.(file.path, comparison);
           }}>
@@ -709,7 +1015,11 @@ function FileActions({comparison, file}: {comparison: Comparison; file: UIChange
     );
   }
 
-  if (revertableStatues.has(file.status) && comparison.type !== ComparisonType.Committed) {
+  if (
+    (revertableStatues.has(file.status) && comparison.type !== ComparisonType.Committed) ||
+    // special case: reverting does actually work for added files in the head commit
+    (comparison.type === ComparisonType.HeadChanges && file.status === 'A')
+  ) {
     actions.push(
       <Tooltip
         title={
@@ -743,7 +1053,7 @@ function FileActions({comparison, file}: {comparison: Comparison; file: UIChange
                     [file.path],
                     comparison.type === ComparisonType.UncommittedChanges
                       ? undefined
-                      : revsetForComparison(comparison),
+                      : succeedableRevset(revsetForComparison(comparison)),
                   ),
                 );
               });
@@ -788,6 +1098,7 @@ function FileActions({comparison, file}: {comparison: Comparison; file: UIChange
             className="file-show-on-hover"
             key={file.path}
             appearance="icon"
+            data-testid="file-action-delete"
             onClick={async () => {
               const ok = await platform.confirm(
                 t('Are you sure you want to delete $file?', {replace: {$file: file.path}}),
@@ -795,11 +1106,7 @@ function FileActions({comparison, file}: {comparison: Comparison; file: UIChange
               if (!ok) {
                 return;
               }
-              // There's no `sl` command that will delete an untracked file, we need to do it manually.
-              serverAPI.postMessage({
-                type: 'deleteFile',
-                filePath: file.path,
-              });
+              runOperation(new PurgeOperation([file.path]));
             }}>
             <Icon icon="trash" />
           </VSCodeButton>
@@ -858,7 +1165,7 @@ function FileActions({comparison, file}: {comparison: Comparison; file: UIChange
       );
     }
 
-    if (hasExperimental && conflicts == null) {
+    if (place === 'main' && conflicts == null) {
       actions.push(<PartialSelectionAction file={file} key="partial-selection" />);
     }
   }
@@ -870,24 +1177,61 @@ function FileActions({comparison, file}: {comparison: Comparison; file: UIChange
 }
 
 function PartialSelectionAction({file}: {file: UIChangedFile}) {
-  const getPanel = () => {
-    return (
-      <SuspenseBoundary>
-        <PartialSelectionPanel file={file} />
-      </SuspenseBoundary>
-    );
+  const selection = useUncommittedSelection();
+
+  const handleClick = () => {
+    selection.toggleExpand(file.path);
   };
 
   return (
     <Tooltip
-      title={t('Select partial changes')}
-      component={getPanel}
-      trigger="click"
-      placement="bottom">
-      <VSCodeButton className="file-show-on-hover" appearance="icon">
+      component={() => (
+        <div style={{maxWidth: '300px'}}>
+          <div>
+            <T
+              replace={{
+                $beta: (
+                  <span
+                    style={{
+                      color: 'var(--scm-removed-foreground)',
+                      marginLeft: 'var(--halfpad)',
+                      fontSize: '80%',
+                    }}>
+                    (Beta)
+                  </span>
+                ),
+              }}>
+              Toggle chunk selection $beta
+            </T>
+          </div>
+          <div>
+            <T>
+              Shows changed files in your commit and lets you select individual chunks or lines to
+              include.
+            </T>
+          </div>
+        </div>
+      )}>
+      <VSCodeButton className="file-show-on-hover" appearance="icon" onClick={handleClick}>
         <Icon icon="diff" />
       </VSCodeButton>
     </Tooltip>
+  );
+}
+
+// Left margin to "indendent" by roughly a checkbox width.
+const leftMarginStyle: React.CSSProperties = {marginLeft: 'calc(2.5 * var(--pad))'};
+
+function MaybePartialSelection({file}: {file: UIChangedFile}) {
+  const fallback = (
+    <div style={leftMarginStyle}>
+      <Icon icon="loading" />
+    </div>
+  );
+  return (
+    <SuspenseBoundary fallback={fallback}>
+      <PartialSelectionPanel file={file} />
+    </SuspenseBoundary>
   );
 }
 
@@ -897,10 +1241,13 @@ function PartialSelectionPanel({file}: {file: UIChangedFile}) {
   const chunkSelect = usePromise(selection.getChunkSelect(path));
 
   return (
-    <PartialFileSelection
-      chunkSelection={chunkSelect}
-      setChunkSelection={state => selection.editChunkSelect(path, state)}
-    />
+    <div style={leftMarginStyle}>
+      <PartialFileSelectionWithMode
+        chunkSelection={chunkSelect}
+        setChunkSelection={state => selection.editChunkSelect(path, state)}
+        mode="unified"
+      />
+    </div>
   );
 }
 
@@ -912,7 +1259,7 @@ const nameAndIconForFileStatus: Record<VisualChangedFileType, [string, string]> 
   M: ['modified', 'diff-modified'],
   R: ['removed', 'diff-removed'],
   '?': ['ignored', 'question'],
-  '!': ['ignored', 'warning'],
+  '!': ['missing', 'warning'],
   U: ['unresolved', 'diff-ignored'],
   Resolved: ['resolved', 'pass'],
   Renamed: ['modified', 'diff-renamed'],

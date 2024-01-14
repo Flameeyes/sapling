@@ -332,7 +332,7 @@ where
         if crate::is_testing() {
             if let Ok(s) = var("DAG_SKIP_FLUSH_VERTEXES") {
                 skip_vertexes = Some(
-                    s.split(",")
+                    s.split(',')
                         .filter_map(|s| VertexName::from_hex(s.as_bytes()).ok())
                         .collect(),
                 )
@@ -742,7 +742,7 @@ where
             let segments = &clone_data.flat_segments.segments;
             let id_set = IdSet::from_spans(segments.iter().map(|s| s.low..=s.high));
             for seg in segments {
-                let pids: Vec<Id> = seg.parents.iter().copied().collect();
+                let pids: Vec<Id> = seg.parents.to_vec();
                 // Parents that are not part of the pull vertexes should exist
                 // in the local graph.
                 let connected_pids: Vec<Id> = pids
@@ -759,7 +759,7 @@ where
             }
 
             let to_names = |ids: &[Id], hint: &str| -> Result<Vec<VertexName>> {
-                let names = ids.iter().map(|i| match clone_data.idmap.get(&i) {
+                let names = ids.iter().map(|i| match clone_data.idmap.get(i) {
                     Some(v) => Ok(v.clone()),
                     None => {
                         programming(format!("server does not provide name for {} {:?}", hint, i))
@@ -813,13 +813,12 @@ where
             server_idmap.iter().map(|(&id, name)| (name, id)).collect();
         // `taken` is the union of `covered` and `reserved`, mainly used by `find_free_span`.
         let mut taken = {
-            let covered = new.dag().all_ids_in_groups(&[Group::MASTER])?;
             // Normally we would want `calculate_initial_reserved` here. But we calculate head
             // reservation for all `heads` in order, instead of just considering heads in the
             // `clone_data`. So we're fine without the "initial reserved". In other words, the
             // `calculate_initial_reserved` logic is "inlined" into the `for ... in heads`
             // loop below.
-            covered
+            new.dag().all_ids_in_groups(&[Group::MASTER])?
         };
 
         // Index used by lookups.
@@ -848,10 +847,19 @@ where
             })
         };
 
-        // Insert segments by visiting the heads.
+        // Insert segments by visiting the heads following the `VertexOptions` order.
         //
-        // Similar to `IdMap::assign_head`, but insert a segment at a time,
-        // not a vertex at a time.
+        // If a segment is not ready to be inserted (ex. its parents are still missing),
+        // their parents will be visited recursively. This has the nice effects
+        // comparing to `import_clone_data` which blindly takes the input as-is:
+        // - De-fragment `clone_data`: gaps or sub-optional segment order won't hurt.
+        // - Respect the local `VertexOptions`: respect the order and reserve_size
+        //   set locally if possible.
+        // - Ignore "bogus" unrelated sub-graph: if the `clone_data` contains more
+        //   segments then needed, they will be simply ignored.
+        //
+        // The implementation (of using a stack) is similar to `IdMap::assign_head`,
+        // but insert a segment at a time, not a vertex at a time.
         //
         // Only the MASTER group supports laziness. So we only care about it.
         for (head, opts) in heads.vertex_options() {
@@ -897,7 +905,7 @@ where
                 let mut missng_parent_server_ids = Vec::new();
 
                 // Calculate `parent_client_ids`, and `missng_parent_server_ids`.
-                // Intentiaonlly using `new.map` not `new` to bypass remote lookups.
+                // Intentionally using `new.map` not `new` to bypass remote lookups.
                 {
                     let client_id_res = new.map.vertex_id_batch(&parent_names).await?;
                     assert_eq!(client_id_res.len(), parent_server_ids.len());
@@ -934,12 +942,10 @@ where
 
                 // All parents are present. Time to insert this segment.
                 // Find a suitable low..=high range.
-                let candidate_id = parent_client_ids
-                    .iter()
-                    .max()
-                    .copied()
-                    .unwrap_or(Group::MASTER.min_id())
-                    + 1;
+                let candidate_id = match parent_client_ids.iter().max().copied() {
+                    None => Group::MASTER.min_id(),
+                    Some(id) => id + 1,
+                };
                 let size = server_seg.high.0 - server_seg.low.0 + 1;
                 let span = find_free_span(&taken, candidate_id, size, false);
 
@@ -1043,7 +1049,7 @@ where
     S: TryClone + Send + Sync + 'static,
 {
     async fn export_pull_data(&self, set: &NameSet) -> Result<CloneData<VertexName>> {
-        let id_set = self.to_id_set(&set).await?;
+        let id_set = self.to_id_set(set).await?;
 
         let flat_segments = self.dag.idset_to_flat_segments(id_set)?;
         let ids: Vec<_> = flat_segments.parents_head_and_roots().into_iter().collect();
@@ -1542,7 +1548,7 @@ async fn calculate_id_name_from_paths(
         } else {
             tracing::debug!("resolved {:?} => {} {:?} ...", &path, id, &names[0]);
         }
-        for (i, name) in names.into_iter().enumerate() {
+        for (i, name) in names.iter().enumerate() {
             if i > 0 {
                 // Follow id's first parent.
                 id = match dag.parent_ids(id)?.first().cloned() {
@@ -1935,7 +1941,7 @@ where
     }
 
     fn dag_version(&self) -> &VerLink {
-        &self.dag.version()
+        self.dag.version()
     }
 }
 
@@ -2021,14 +2027,14 @@ where
             Ok(Some(id)) => Ok(Some(id)),
             Err(err) => Err(err),
             Ok(None) if self.is_vertex_lazy() => {
-                if let Some(id) = self.overlay_map.read().unwrap().lookup_vertex_id(&name) {
+                if let Some(id) = self.overlay_map.read().unwrap().lookup_vertex_id(name) {
                     return Ok(Some(id));
                 }
                 if self
                     .missing_vertexes_confirmed_by_remote
                     .read()
                     .unwrap()
-                    .contains(&name)
+                    .contains(name)
                 {
                     return Ok(None);
                 }
@@ -2095,7 +2101,7 @@ where
                     .missing_vertexes_confirmed_by_remote
                     .read()
                     .unwrap()
-                    .contains(&name)
+                    .contains(name)
                 {
                     return Ok(false);
                 }
@@ -2435,15 +2441,14 @@ fn find_free_span(covered: &IdSet, low: Id, reserve_size: u64, shrink_to_fit: bo
     let mut low = low;
     let mut high;
     loop {
-        high = (low + (reserve_size as u64) - 1).min(low.group().max_id());
+        high = (low + reserve_size - 1).min(low.group().max_id());
         // Try to reserve id..=id+reserve_size-1
         let reserved = IdSet::from_spans(vec![low..=high]);
         let intersected = reserved.intersection(covered);
         if let Some(span) = intersected.iter_span_asc().next() {
             // Overlap with existing covered spans. Decrease `high` so it
             // no longer overlap.
-            let last_free = span.low - 1;
-            if last_free >= low && shrink_to_fit {
+            if span.low > low && shrink_to_fit {
                 // Use the remaining part of the previous reservation.
                 //   [----------reserved--------------]
                 //             [--intersected--]
@@ -2454,6 +2459,7 @@ fn find_free_span(covered: &IdSet, low: Id, reserve_size: u64, shrink_to_fit: bo
                 //   [reserved] <- remaining of the previous reservation
                 //            ^
                 //            high
+                let last_free = span.low - 1;
                 high = last_free;
             } else {
                 // No space on the left side. Try the right side.
@@ -2591,5 +2597,20 @@ impl fmt::Debug for DebugId {
         }
         write!(f, "{:?}", self.id)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_free_span_overflow() {
+        let covered = IdSet::from(0..=6);
+        let reserve_size = 2;
+        for shrink_to_fit in [true, false] {
+            let span = find_free_span(&covered, Id(0), reserve_size, shrink_to_fit);
+            assert_eq!(span, IdSpan::from(7..=8));
+        }
     }
 }

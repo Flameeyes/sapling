@@ -170,6 +170,9 @@ impl VFS {
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_NOFOLLOW);
+
+            // This sets file mode if file is created during "open".
+            options.mode(Self::update_mode(util::file::apply_umask(0o666), exec));
         }
 
         let mut f = options.open(filepath)?;
@@ -179,9 +182,11 @@ impl VFS {
             let metadata = f.metadata()?;
             let mut permissions = metadata.permissions();
             let mode = Self::update_mode(permissions.mode(), exec);
-            permissions.set_mode(mode);
-            f.set_permissions(permissions)
-                .with_context(|| format!("Failed to set permissions on {:?}", filepath))?;
+            if mode != permissions.mode() {
+                permissions.set_mode(mode);
+                f.set_permissions(permissions)
+                    .with_context(|| format!("Failed to set permissions on {:?}", filepath))?;
+            }
         }
 
         f.write_all(content)
@@ -226,12 +231,19 @@ impl VFS {
     /// Add a symlink `link_name` pointing to `link_dest`. On platforms that do not support symlinks,
     /// `link_name` will be a file containing the path to `link_dest`.
     fn symlink(&self, link_name: &Path, link_dest: &Path) -> Result<()> {
-        #[cfg(windows)]
-        let result = Self::plain_symlink_file(link_name, link_dest);
-
-        #[cfg(not(windows))]
-        let result = if self.inner.supports_symlinks {
-            std::os::unix::fs::symlink(link_dest, link_name).map_err(Into::into)
+        let result = if self.inner.supports_symlinks && (cfg!(unix) || cfg!(windows)) {
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_file(
+                    util::path::replace_slash_with_backslash(link_dest).as_path(),
+                    link_name,
+                )
+                .map_err(Into::into)
+            }
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(link_dest, link_name).map_err(Into::into)
+            }
         } else {
             Self::plain_symlink_file(link_name, link_dest)
         };
@@ -328,7 +340,14 @@ impl VFS {
         let metadata = self.metadata(path)?;
         let content = if metadata.is_symlink() {
             match std::fs::read_link(&filepath)?.to_str() {
-                Some(p) => p.as_bytes().iter().map(|u| *u).collect(),
+                Some(p) => {
+                    let p = if cfg!(windows) {
+                        p.replace('\\', "/")
+                    } else {
+                        p.to_owned()
+                    };
+                    p.as_bytes().to_vec()
+                }
                 None => bail!("invalid path during vfs::read '{:?}'", filepath),
             }
         } else {
@@ -339,10 +358,10 @@ impl VFS {
 
     /// Removes file, but unlike Self::remove, does not delete empty directories.
     fn remove_keep_path(&self, filepath: &PathBuf) -> Result<()> {
-        if let Ok(metadata) = symlink_metadata(&filepath) {
+        if let Ok(metadata) = symlink_metadata(filepath) {
             let file_type = metadata.file_type();
             if file_type.is_file() || file_type.is_symlink() {
-                let result = remove_file(&filepath)
+                let result = remove_file(filepath)
                     .with_context(|| format!("Can't remove file {:?}", filepath));
                 if let Err(e) = result {
                     if let Some(io_error) = e.downcast_ref::<io::Error>() {

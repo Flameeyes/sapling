@@ -10,7 +10,6 @@
 
   $ setconfig devel.segmented-changelog-rev-compat=true
   $ setconfig experimental.allowfilepeer=True
-  $ setconfig workingcopy.ruststatus=false
   $ cat >> $HGRCPATH << 'EOF'
   > [extensions]
   > rebase=
@@ -100,7 +99,8 @@
   [1]
   $ hg pull --rebase
   abort: histedit in progress
-  (use 'hg histedit --continue' or 'hg histedit --abort')
+  (use 'hg histedit --continue' to continue or
+       'hg histedit --abort' to abort)
   [255]
   $ hg histedit --abort --quiet
 

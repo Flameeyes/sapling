@@ -29,12 +29,6 @@ def get_default_hgrc() -> configparser.ConfigParser:
     cases and test case variants.
     """
     hgrc = configparser.ConfigParser()
-    # TODO(mbolin): This is supposed to replace experimental.updatecheck,
-    # but it does not appear to be taking effect today. The
-    # experimental.updatecheck setting on this hgrc should be removed once
-    # it has been deprecated and update.check does what it is supposed to
-    # do.
-    hgrc["commands"] = {"update.check": "noconflict"}
     hgrc["ui"] = {
         "origbackuppath": ".hg/origbackups",
         "username": "Kevin Flynn <lightcyclist@example.com>",
@@ -42,7 +36,6 @@ def get_default_hgrc() -> configparser.ConfigParser:
     hgrc["experimental"] = {
         "evolution": "createmarkers",
         "evolutioncommands": "prev next split fold obsolete metaedit",
-        "updatecheck": "noconflict",
     }
     hgrc["extensions"] = {
         "absorb": "",
@@ -85,6 +78,7 @@ class EdenHgTestCase(testcase.EdenTestCase, metaclass=abc.ABCMeta):
     backing_repo: hgrepo.HgRepository
     enable_windows_symlinks: bool = False
     inode_catalog_type: Optional[str] = None
+    backing_store_type: Optional[str] = None
 
     def setup_eden_test(self) -> None:
         super().setup_eden_test()
@@ -99,10 +93,15 @@ class EdenHgTestCase(testcase.EdenTestCase, metaclass=abc.ABCMeta):
             self.mount,
             allow_empty=True,
             enable_windows_symlinks=self.enable_windows_symlinks,
+            backing_store=self.backing_store_type,
         )
 
         # Now create the repository object that refers to the eden client
-        self.repo = hgrepo.HgRepository(self.mount, system_hgrc=self.system_hgrc)
+        self.repo = hgrepo.HgRepository(
+            self.mount,
+            system_hgrc=self.system_hgrc,
+            filtered=self.backing_store_type == "filteredhg",
+        )
 
     def edenfs_extra_config(self) -> Optional[Dict[str, List[str]]]:
         configs = super().edenfs_extra_config()
@@ -403,7 +402,15 @@ class EdenHgTestCase(testcase.EdenTestCase, metaclass=abc.ABCMeta):
         self.assertEqual([], self.repo.journal())
 
 
-class JournalEntry(object):
+# Intended for use with any test that doesn't make sense to run on an
+# unfiltered Hg repo. Examples are any test that applies filters to the repo.
+class FilteredHgTestCase(EdenHgTestCase, metaclass=abc.ABCMeta):
+    def setup_eden_test(self) -> None:
+        self.backing_store_type = "filteredhg"
+        super().setup_eden_test()
+
+
+class JournalEntry:
     """
     JournalEntry describes an expected journal entry.
     It is intended to pass to EdenHgTestCase.assert_journal()
@@ -488,24 +495,57 @@ def _replicate_hg_test(
     if eden.config.HAVE_NFS:
         tree_variants.append(("TreeOnlyNFS", [testcase.NFSTestMixin]))
 
+    # Mix in FilteredHg tests if the build supports it.
+    scm_variants: MixinList = [("", [])]
+    # Temporarily disable FilteredHg mixins to test whether they are causing
+    # other tests to hang
+    if eden.config.HAVE_FILTEREDHG and False:
+        scm_variants.append(("FilteredHg", [FilteredTestMixin]))
+
     overlay_variants: MixinList = [("", [])]
     if sys.platform == "win32":
         overlay_variants.append(("InMemory", [InMemoryOverlayTestMixin]))
 
     for tree_label, tree_mixins in tree_variants:
         for overlay_label, overlay_mixins in overlay_variants:
+            for scm_label, scm_mixins in scm_variants:
 
-            class VariantHgRepoTest(*tree_mixins, *overlay_mixins, test_class):
-                pass
+                class VariantHgRepoTest(
+                    *tree_mixins, *overlay_mixins, *scm_mixins, test_class
+                ):
+                    pass
 
-            yield (
-                f"{tree_label}{overlay_label}",
-                typing.cast(Type[EdenHgTestCase], VariantHgRepoTest),
-            )
+                yield (
+                    f"{tree_label}{overlay_label}{scm_label}",
+                    typing.cast(Type[EdenHgTestCase], VariantHgRepoTest),
+                )
+
+
+def _replicate_filteredhg_test(
+    test_class: Type[FilteredHgTestCase],
+) -> Iterable[Tuple[str, Type[FilteredHgTestCase]]]:
+    tree_variants: MixinList = [("TreeOnly", [])]
+    if eden.config.HAVE_NFS:
+        tree_variants.append(("TreeOnlyNFS", [testcase.NFSTestMixin]))
+
+    for tree_label, tree_mixins in tree_variants:
+
+        class VariantHgRepoTest(*tree_mixins, test_class):
+            pass
+
+        yield (
+            f"{tree_label}",
+            typing.cast(Type[FilteredHgTestCase], VariantHgRepoTest),
+        )
 
 
 class InMemoryOverlayTestMixin:
     inode_catalog_type = "inmemory"
 
 
+class FilteredTestMixin:
+    backing_store_type = "filteredhg"
+
+
 hg_test = testcase.test_replicator(_replicate_hg_test)
+filteredhg_test = testcase.test_replicator(_replicate_filteredhg_test)

@@ -10,7 +10,7 @@ import type {Deferred} from 'shared/utils';
 import {useCommand} from './ISLShortcuts';
 import {Modal} from './Modal';
 import {VSCodeButton} from '@vscode/webview-ui-toolkit/react';
-import {useEffect, useRef} from 'react';
+import React, {useCallback, useEffect, useRef} from 'react';
 import {atom, useRecoilState, useSetRecoilState} from 'recoil';
 import {Icon} from 'shared/Icon';
 import {defer} from 'shared/utils';
@@ -18,25 +18,31 @@ import {defer} from 'shared/utils';
 import './useModal.css';
 
 type ButtonConfig = {label: string | React.ReactNode; primary?: boolean};
-type ModalConfig<T> =
-  | {
-      // hack: using 'confirm' mode requires T to be string.
-      // The type inference goes wrong if we try to add this constraint directly to the `buttons` field.
-      // By adding the constaint here, we get type checking that T is string in order to use this API.
-      type: T extends string ? 'confirm' : T extends ButtonConfig ? 'confirm' : never;
-      message: React.ReactNode;
-      buttons: ReadonlyArray<T>;
-      /** Optional codicon to show next to the title */
-      icon?: string;
-      title: React.ReactNode;
-    }
-  | {
-      type: 'custom';
-      component: React.FC<{returnResultAndDismiss: (data: T) => void}>;
-      /** Optional codicon to show next to the title */
-      icon?: string;
-      title: React.ReactNode;
-    };
+type ModalConfigBase = {
+  /** Optional codicon to show next to the title */
+  icon?: string;
+  title?: React.ReactNode;
+  width?: string | number;
+  height?: string | number;
+  maxWidth?: string | number;
+  maxHeight?: string | number;
+  dataTestId?: string;
+};
+type ModalConfig<T> = ModalConfigBase &
+  (
+    | {
+        // hack: using 'confirm' mode requires T to be string.
+        // The type inference goes wrong if we try to add this constraint directly to the `buttons` field.
+        // By adding the constaint here, we get type checking that T is string in order to use this API.
+        type: T extends string ? 'confirm' : T extends ButtonConfig ? 'confirm' : never;
+        message: React.ReactNode;
+        buttons: ReadonlyArray<T>;
+      }
+    | {
+        type: 'custom';
+        component: (props: {returnResultAndDismiss: (data: T) => void}) => React.ReactNode;
+      }
+  );
 type ModalState<T> = {
   config: ModalConfig<T>;
   visible: boolean;
@@ -102,32 +108,35 @@ export function ModalContainer() {
       </>
     );
   } else if (modal.config.type === 'custom') {
-    const Component = modal.config.component;
-    content = (
-      <Component
-        returnResultAndDismiss={data => {
-          modal.deferred.resolve(data);
-          setModal({...modal, visible: false});
-        }}
-      />
-    );
+    content = modal.config.component({
+      returnResultAndDismiss: data => {
+        modal.deferred.resolve(data);
+        setModal({...modal, visible: false});
+      },
+    });
   }
 
   return (
     <Modal
-      height="fit-content"
+      height={modal.config.height}
+      width={modal.config.width}
+      maxHeight={modal.config.maxHeight}
+      maxWidth={modal.config.maxWidth}
       className="use-modal"
       aria-labelledby="use-modal-title"
       aria-describedby="use-modal-message"
+      dataTestId={modal.config.dataTestId}
       dismiss={dismiss}>
-      <div id="use-modal-title">
-        {modal.config.icon != null ? <Icon icon={modal.config.icon} size="M" /> : null}
-        {typeof modal.config.title === 'string' ? (
-          <span>{modal.config.title}</span>
-        ) : (
-          modal.config.title
-        )}
-      </div>
+      {modal.config.title != null && (
+        <div id="use-modal-title">
+          {modal.config.icon != null ? <Icon icon={modal.config.icon} size="M" /> : null}
+          {typeof modal.config.title === 'string' ? (
+            <span>{modal.config.title}</span>
+          ) : (
+            modal.config.title
+          )}
+        </div>
+      )}
       {content}
     </Modal>
   );
@@ -144,16 +153,19 @@ export function ModalContainer() {
 export function useModal(): <T>(config: ModalConfig<T>) => Promise<T | undefined> {
   const setModal = useSetRecoilState(modalState);
 
-  return <T,>(config: ModalConfig<T>) => {
-    const deferred = defer<T | undefined>();
-    // The API we provide is typed with T, but our recoil state only knows `unknown`, so we have to cast.
-    // This is safe because only one modal is visible at a time, so we know the data type we created it with is what we'll get back.
-    setModal({
-      config: config as ModalConfig<unknown>,
-      visible: true,
-      deferred: deferred as Deferred<unknown | undefined>,
-    });
+  return useCallback(
+    <T,>(config: ModalConfig<T>) => {
+      const deferred = defer<T | undefined>();
+      // The API we provide is typed with T, but our recoil state only knows `unknown`, so we have to cast.
+      // This is safe because only one modal is visible at a time, so we know the data type we created it with is what we'll get back.
+      setModal({
+        config: config as ModalConfig<unknown>,
+        visible: true,
+        deferred: deferred as Deferred<unknown | undefined>,
+      });
 
-    return deferred.promise as Promise<T>;
-  };
+      return deferred.promise as Promise<T>;
+    },
+    [setModal],
+  );
 }

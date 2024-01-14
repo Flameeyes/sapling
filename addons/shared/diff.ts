@@ -33,7 +33,7 @@ SOFTWARE.
 import diffSequences from 'diff-sequences';
 
 /** Index of a line. Starts from 0. */
-type LineIdx = number;
+export type LineIdx = number;
 
 /**
  * Calculate the line differences. For performance, this function only
@@ -49,6 +49,25 @@ export function diffLines(
   aLines: string[],
   bLines: string[],
 ): [LineIdx, LineIdx, LineIdx, LineIdx][] {
+  return diffBlocks(aLines, bLines)
+    .filter(([sign, _range]) => sign === '!')
+    .map(([_sign, range]) => range);
+}
+
+/**
+ * Calculate the line differences. For performance, this function returns
+ * line ranges not line contents.
+ *
+ * Similar to Mercurial's `mdiff.allblocks`.
+ *
+ * @param aLines lines on the "a" side.
+ * @param bLines lines on the "b" side.
+ * @returns A list of `[sign, [a1, a2, b1, b2]]` tuples for the line ranges.
+ * If `sign` is `'='`, the a1 to a2 range on the a side, and b1 to b2 range
+ * on the b side are the same on both sides. Otherwise, `sign` is `'!'`
+ * meaning the ranges are different.
+ */
+export function diffBlocks(aLines: string[], bLines: string[]): Array<Block> {
   // Avoid O(string length) comparison.
   const [aList, bList] = stringsToInts([aLines, bLines]);
 
@@ -57,18 +76,24 @@ export function diffLines(
   let bLen = bList.length;
   const minLen = Math.min(aLen, bLen);
   let commonPrefixLen = 0;
+  let commonSuffixLen = 0;
   while (commonPrefixLen < minLen && aList[commonPrefixLen] === bList[commonPrefixLen]) {
     commonPrefixLen += 1;
   }
   while (aLen > commonPrefixLen && bLen > commonPrefixLen && aList[aLen - 1] === bList[bLen - 1]) {
     aLen -= 1;
     bLen -= 1;
+    commonSuffixLen += 1;
   }
   aLen -= commonPrefixLen;
   bLen -= commonPrefixLen;
 
+  const blocks: Array<Block> = [];
+  if (commonPrefixLen > 0) {
+    blocks.push(['=', [0, commonPrefixLen, 0, commonPrefixLen]]);
+  }
+
   // Run the diff algorithm.
-  const blocks: [LineIdx, LineIdx, LineIdx, LineIdx][] = [];
   let a1 = 0;
   let b1 = 0;
 
@@ -79,10 +104,19 @@ export function diffLines(
   function foundSequence(n: LineIdx, a2: LineIdx, b2: LineIdx) {
     if (a1 !== a2 || b1 !== b2) {
       blocks.push([
-        a1 + commonPrefixLen,
-        a2 + commonPrefixLen,
-        b1 + commonPrefixLen,
-        b2 + commonPrefixLen,
+        '!',
+        [a1 + commonPrefixLen, a2 + commonPrefixLen, b1 + commonPrefixLen, b2 + commonPrefixLen],
+      ]);
+    }
+    if (n > 0) {
+      blocks.push([
+        '=',
+        [
+          a2 + commonPrefixLen,
+          a2 + n + commonPrefixLen,
+          b2 + commonPrefixLen,
+          b2 + n + commonPrefixLen,
+        ],
       ]);
     }
     a1 = a2 + n;
@@ -90,10 +124,128 @@ export function diffLines(
   }
 
   diffSequences(aLen, bLen, isCommon, foundSequence);
-  foundSequence(0, aLen, bLen);
+  foundSequence(commonSuffixLen, aLen, bLen);
 
   return blocks;
 }
+
+/**
+ * Post process `blocks` from `diffBlocks` to collapse unchanged lines.
+ * `contextLineCount` lines before or after a `!` (changed) block are
+ * not collapsed.
+ *
+ * If `isALineExpanded(aLine, bLine)` returns `true`, then the _block_
+ * is expanded.
+ *
+ * Split `=` blocks into `=` and `~` blocks. The `~` blocks are expected
+ * to be collapsed.
+ */
+export function collapseContextBlocks(
+  blocks: Array<Block>,
+  isLineExpanded: (aLine: LineIdx, bLine: LineIdx) => boolean,
+  contextLineCount = 3,
+): Array<ContextBlock> {
+  const collapsedBlocks: Array<ContextBlock> = [];
+  blocks.forEach((block, i) => {
+    const [sign, [a1, a2, b1, b2]] = block;
+    if (sign === '!') {
+      collapsedBlocks.push(block);
+    } else if (sign === '=') {
+      // a1 ... a1 + topContext ... a2 - bottomContext ... a2
+      //                        ^^^ collapse this range (c1 to c2)
+      // The topContext and bottomContext can be 0 lines if they are not adjacent
+      // to a diff block.
+      const topContext = i == 0 || blocks[i - 1][0] !== '!' ? 0 : contextLineCount;
+      const bottomContext =
+        i + 1 == blocks.length || blocks[i + 1][0] !== '!' ? 0 : contextLineCount;
+      const c1 = Math.min(a1 + topContext, a2);
+      const c2 = Math.max(c1, a2 - bottomContext);
+      const aToB = b1 - a1;
+      if (c1 >= c2 || isLineExpanded(c1, c1 + aToB) || isLineExpanded(c2 - 1, c2 - 1 + aToB)) {
+        // Nothing to collapse.
+        collapsedBlocks.push(block);
+      } else {
+        // Split. Collapse c1 .. c2 range.
+        if (c1 > a1) {
+          collapsedBlocks.push(['=', [a1, c1, b1, c1 + aToB]]);
+        }
+        collapsedBlocks.push(['~', [c1, c2, c1 + aToB, c2 + aToB]]);
+        if (c2 < a2) {
+          collapsedBlocks.push(['=', [c2, a2, c2 + aToB, b2]]);
+        }
+      }
+    }
+  });
+  return collapsedBlocks;
+}
+
+/**
+ * Merge diffBlocks(a, b) and diffBlocks(c, b).
+ * Any difference (between a and b, or c and b) generates a `!` block.
+ * The (a1, a2) line numbers in the output blocks are changed to (b1, b2).
+ * Preserve empty (a1 == a2, b1 == b2) '!' blocks for context line calculation.
+ */
+export function mergeBlocks(abBlocks: Array<Block>, cbBlocks: Array<Block>): Array<Block> {
+  let i = 0; // Index of abBlocks.
+  let j = 0; // Index of cbBlocks.
+  let start = 0; // "Current" line index of b.
+  const result: Array<Block> = [];
+
+  const push = (sign: Sign, end: number) => {
+    const last = result.at(-1);
+    if (last?.[0] === sign) {
+      last[1][1] = end;
+      last[1][3] = end;
+    } else {
+      result.push([sign, [start, end, start, end]]);
+    }
+    start = end;
+  };
+
+  while (i < abBlocks.length && j < cbBlocks.length) {
+    const [sign1, [, , b11, b12]] = abBlocks[i];
+    if (b11 === b12 && b12 === start && sign1 === '!') {
+      push(sign1, start);
+    }
+    if (b12 <= start) {
+      ++i;
+      continue;
+    }
+    const [sign2, [, , b21, b22]] = cbBlocks[j];
+    if (b21 === b22 && b21 === start && sign2 === '!') {
+      push(sign2, start);
+    }
+    if (b22 <= start) {
+      ++j;
+      continue;
+    }
+
+    // Minimal "end" so there cannot be 2 different signs in the start-end range
+    // on either side. Note 2 sides might have different signs.
+    const end = Math.min(...[b11, b12, b21, b22].filter(i => i > start));
+
+    // Figure out the sign of the start-end range.
+    let sign: Sign = '=';
+    if (
+      (start >= b11 && end <= b12 && sign1 === '!') ||
+      (start >= b21 && end <= b22 && sign2 === '!')
+    ) {
+      sign = '!';
+    }
+    push(sign, end);
+  }
+
+  return result;
+}
+
+/** Indicates whether a block is same or different on both sides. */
+export type Sign = '=' | '!';
+
+/** Return type of `diffBlocks`. */
+export type Block = [Sign, [LineIdx, LineIdx, LineIdx, LineIdx]];
+
+/** Return type of `collapseContextLines`. */
+export type ContextBlock = [Sign | '~', [LineIdx, LineIdx, LineIdx, LineIdx]];
 
 /**
  * Split lines by `\n`. Preserve the end of lines.

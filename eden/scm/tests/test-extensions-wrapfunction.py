@@ -1,10 +1,6 @@
 from __future__ import absolute_import, print_function
 
-from edenscm import extensions
-from hghave import require
-
-
-require(["py2"])
+from sapling import extensions
 
 
 def genwrapper(x):
@@ -22,7 +18,7 @@ def getid(wrapper):
 wrappers = [genwrapper(i) for i in range(5)]
 
 
-class dummyclass(object):
+class dummyclass:
     def getstack(self):
         return ["orig"]
 
@@ -48,7 +44,7 @@ def batchunwrap(wrappers):
 
 
 batchwrap(wrappers + [wrappers[0]])
-batchunwrap([(wrappers[i] if i >= 0 else None) for i in [3, None, 0, 4, 0, 2, 1, None]])
+batchunwrap([(wrappers[i] if i >= 0 else None) for i in [3, -1, 0, 4, 0, 2, 1, -1]])
 
 wrap0 = extensions.wrappedfunction(dummy, "getstack", wrappers[0])
 wrap1 = extensions.wrappedfunction(dummy, "getstack", wrappers[1])
@@ -68,7 +64,7 @@ with wrap1:
 print("context manager", dummy.getstack())
 
 # Wrap callable object which has no __name__
-class callableobj(object):
+class callableobj:
     def __call__(self):
         return ["orig"]
 

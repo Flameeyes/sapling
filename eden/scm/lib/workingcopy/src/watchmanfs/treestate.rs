@@ -6,30 +6,26 @@
  */
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use anyhow::anyhow;
 use anyhow::Result;
-use configmodel::Config;
 use pathmatcher::DynMatcher;
-use repolock::RepoLocker;
-use treestate::dirstate;
 use treestate::filestate::FileStateV2;
 use treestate::filestate::StateFlags;
 use treestate::treestate::TreeState;
-use treestate::ErrorKind;
 use types::path::ParseError;
 use types::RepoPathBuf;
 use watchman_client::prelude::*;
 
 use crate::metadata::Metadata;
+use crate::util::update_filestate_from_fs_meta;
 use crate::util::walk_treestate;
 
 pub(crate) fn mark_needs_check(ts: &mut TreeState, path: &RepoPathBuf) -> Result<bool> {
     let state = ts.get(path)?;
     let filestate = match state {
         Some(filestate) => {
-            let filestate = filestate.clone();
+            let mut filestate = filestate.clone();
             if filestate.state.intersects(StateFlags::NEED_CHECK) {
                 tracing::trace!(%path, "already NEED_CHECK");
                 // It's already marked need_check, so return early so we don't mutate the
@@ -37,10 +33,8 @@ pub(crate) fn mark_needs_check(ts: &mut TreeState, path: &RepoPathBuf) -> Result
                 return Ok(false);
             }
             tracing::trace!(%path, "marking NEED_CHECK");
-            FileStateV2 {
-                state: filestate.state | StateFlags::NEED_CHECK,
-                ..filestate
-            }
+            filestate.state |= StateFlags::NEED_CHECK;
+            filestate
         }
         // The file is currently untracked
         None => {
@@ -65,21 +59,16 @@ pub(crate) fn clear_needs_check(
 ) -> Result<bool> {
     let state = ts.get(path)?;
     if let Some(filestate) = state {
-        let filestate = filestate.clone();
+        let mut filestate = filestate.clone();
         if !filestate.state.intersects(StateFlags::NEED_CHECK) {
-            tracing::trace!(%path, "already not NEED_CHECK");
-            // It's already clear.
-            return Ok(false);
+            tracing::trace!(%path, "updating metadata");
+        } else {
+            tracing::trace!(%path, "unsetting NEED_CHECK");
+            filestate.state -= StateFlags::NEED_CHECK;
         }
-        let mut filestate = FileStateV2 {
-            state: filestate.state & !StateFlags::NEED_CHECK,
-            ..filestate
-        };
 
-        if let Some(mtime) = fs_meta.and_then(|m| m.mtime()) {
-            if let Ok(mtime) = mtime.try_into() {
-                filestate.mtime = mtime;
-            }
+        if let Some(fs_meta) = &fs_meta {
+            update_filestate_from_fs_meta(&mut filestate, fs_meta);
         }
 
         if filestate.state.is_empty() {
@@ -89,7 +78,6 @@ pub(crate) fn clear_needs_check(
             tracing::trace!(%path, "empty after unsetting NEED_CHECK");
             ts.remove(path)?;
         } else {
-            tracing::trace!(%path, "unsetting NEED_CHECK");
             ts.insert(path, &filestate)?;
         }
         return Ok(true);
@@ -112,34 +100,6 @@ pub(crate) fn set_clock(ts: &mut TreeState, clock: Clock) -> Result<()> {
 }
 
 #[tracing::instrument(skip_all)]
-pub(crate) fn maybe_flush_treestate(
-    config: &dyn Config,
-    root: &Path,
-    ts: &mut TreeState,
-    locker: &RepoLocker,
-) -> Result<()> {
-    // Respect test fakedirstatewritetime extension.
-    let time_override = if matches!(config.get("extensions", "fakedirstatewritetime"), Some(v) if v != "!")
-    {
-        config
-            .get("fakedirstatewritetime", "fakenow")
-            .map(|time| hgtime::HgTime::parse(time.as_ref()).unwrap().unixtime)
-    } else {
-        None
-    };
-
-    match dirstate::flush(root, ts, locker, time_override) {
-        Ok(()) => Ok(()),
-        // If the dirstate was changed before we flushed, that's ok. Let the other write win
-        // since writes during status are just optimizations.
-        Err(e) => match e.downcast_ref::<ErrorKind>() {
-            Some(e) if *e == ErrorKind::TreestateOutOfDate => Ok(()),
-            _ => Err(e),
-        },
-    }
-}
-
-#[tracing::instrument(skip_all)]
 pub(crate) fn list_needs_check(
     ts: &mut TreeState,
     matcher: DynMatcher,
@@ -150,6 +110,7 @@ pub(crate) fn list_needs_check(
         ts,
         matcher,
         StateFlags::NEED_CHECK,
+        StateFlags::empty(),
         StateFlags::empty(),
         |path, _state| {
             needs_check.push(path);

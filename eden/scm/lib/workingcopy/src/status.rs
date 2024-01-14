@@ -10,10 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use manifest::Manifest;
-use manifest_tree::ReadTreeManifest;
-use manifest_tree::TreeManifest;
 use parking_lot::Mutex;
-use parking_lot::RwLock;
 use pathmatcher::DifferenceMatcher;
 use pathmatcher::DynMatcher;
 use pathmatcher::ExactMatcher;
@@ -21,22 +18,11 @@ use status::StatusBuilder;
 use tracing::trace;
 use treestate::filestate::StateFlags;
 use treestate::treestate::TreeState;
-use types::HgId;
 use types::RepoPathBuf;
 
-use crate::filesystem::ChangeType;
+use crate::filesystem::PendingChange;
 use crate::util::walk_treestate;
 use crate::walker::WalkError;
-
-struct FakeTreeResolver {
-    pub manifest: Arc<RwLock<TreeManifest>>,
-}
-
-impl ReadTreeManifest for FakeTreeResolver {
-    fn get(&self, _commit_id: &HgId) -> Result<Arc<RwLock<TreeManifest>>> {
-        Ok(self.manifest.clone())
-    }
-}
 
 /// Compute the status of the working copy relative to the current commit.
 #[allow(unused_variables)]
@@ -44,7 +30,7 @@ impl ReadTreeManifest for FakeTreeResolver {
 pub fn compute_status(
     p1_manifest: &impl Manifest,
     treestate: Arc<Mutex<TreeState>>,
-    pending_changes: impl Iterator<Item = Result<ChangeType>>,
+    pending_changes: impl Iterator<Item = Result<PendingChange>>,
     matcher: DynMatcher,
 ) -> Result<StatusBuilder> {
     let mut modified = vec![];
@@ -52,6 +38,7 @@ pub fn compute_status(
     let mut removed = vec![];
     let mut deleted = vec![];
     let mut unknown = vec![];
+    let mut ignored = vec![];
     let mut invalid_path = vec![];
     let mut invalid_type = vec![];
 
@@ -64,8 +51,12 @@ pub fn compute_status(
     let mut manifest_files = HashMap::<RepoPathBuf, (bool, bool)>::new();
     for change in pending_changes {
         let (path, is_deleted) = match change {
-            Ok(ChangeType::Changed(path)) => (path, false),
-            Ok(ChangeType::Deleted(path)) => (path, true),
+            Ok(PendingChange::Changed(path)) => (path, false),
+            Ok(PendingChange::Deleted(path)) => (path, true),
+            Ok(PendingChange::Ignored(path)) => {
+                ignored.push(path);
+                continue;
+            }
             Err(e) => {
                 let e = match e.downcast::<types::path::ParseError>() {
                     Ok(parse_err) => {
@@ -103,7 +94,12 @@ pub fn compute_status(
         };
 
         let mut treestate = treestate.lock();
-        match treestate.normalized_get(&path)? {
+
+        // Don't use normalized_get since we need to support statuses like:
+        //   $ sl status
+        //   R foo
+        //   ? FOO
+        match treestate.get(&path)? {
             Some(state) => {
                 let exist_parent = state
                     .state
@@ -122,11 +118,8 @@ pub fn compute_status(
                     // renamed over another existing file.
                     (false, false, false, true) => modified.push(path),
                     (false, false, false, false) => unknown.push(path),
-                    _ => {
-                        // The remaining case is (T, F, _, _).
-                        // If the file is deleted, but didn't exist in a parent commit,
-                        // it didn't change.
-                    }
+                    (true, false, true, _) => deleted.push(path),
+                    (true, false, false, _) => {}
                 }
             }
             None => {
@@ -175,7 +168,8 @@ pub fn compute_status(
         .chain(added.iter())
         .chain(removed.iter())
         .chain(deleted.iter())
-        .chain(unknown.iter());
+        .chain(unknown.iter())
+        .chain(ignored.iter());
 
     // Augment matcher to skip "seen" files since they have already been handled above.
     let matcher = Arc::new(DifferenceMatcher::new(
@@ -191,6 +185,7 @@ pub fn compute_status(
         &mut treestate,
         matcher.clone(),
         StateFlags::EXIST_NEXT,
+        StateFlags::empty(),
         StateFlags::EXIST_P1 | StateFlags::EXIST_P2,
         |path, state| {
             trace!(%path, "deleted (added file not in pending changes)");
@@ -205,6 +200,7 @@ pub fn compute_status(
         &mut treestate,
         matcher.clone(),
         StateFlags::EXIST_P2,
+        StateFlags::empty(),
         StateFlags::empty(),
         |path, state| {
             // If it's in P1 but we didn't see it earlier, that means it didn't change with
@@ -238,6 +234,7 @@ pub fn compute_status(
         &mut treestate,
         matcher.clone(),
         StateFlags::EXIST_P1,
+        StateFlags::empty(),
         StateFlags::EXIST_NEXT,
         |path, state| {
             trace!(%path, "removed (in p1, not in next, not in pending changes)");
@@ -251,7 +248,8 @@ pub fn compute_status(
     walk_treestate(
         &mut treestate,
         matcher.clone(),
-        StateFlags::COPIED,
+        StateFlags::COPIED | StateFlags::EXIST_NEXT,
+        StateFlags::empty(),
         StateFlags::empty(),
         |path, state| {
             trace!(%path, "modified (marked copy, not in pending changes)");
@@ -261,6 +259,12 @@ pub fn compute_status(
     )?;
 
     Ok(StatusBuilder::new()
+        // Ignored added files can show up as both ignored and added.
+        // Work around by inserting ignored first so added files
+        // "win". The better fix is to augment the ignore matcher to
+        // not include added files, which almost works except for
+        // EdenFS, which doesn't report added ignored files as added.
+        .ignored(ignored)
         .modified(modified)
         .added(added)
         .removed(removed)
@@ -275,7 +279,7 @@ mod tests {
     use pathmatcher::Matcher;
     use status::FileStatus;
     use status::Status;
-    use tempdir::TempDir;
+    use tempfile::TempDir;
     use treestate::filestate::FileStateV2;
     use types::RepoPath;
     use types::RepoPathBuf;
@@ -362,7 +366,7 @@ mod tests {
     /// * `changes` is a list of (path, deleted).
     fn status_helper(treestate: &[(&str, StateFlags)], changes: &[(&str, bool)]) -> Result<Status> {
         // Build the TreeState.
-        let dir = TempDir::new("treestate").expect("tempdir");
+        let dir = TempDir::with_prefix("treestate.").expect("tempdir");
         let mut state = TreeState::new(dir.path(), true).expect("open").0;
         let mut manifest_files = vec![];
         for (path, flags) in treestate {
@@ -390,9 +394,9 @@ mod tests {
         let changes = changes.iter().map(|&(path, is_deleted)| {
             let path = RepoPathBuf::from_string(path.to_string()).expect("path");
             if is_deleted {
-                Ok(ChangeType::Deleted(path))
+                Ok(PendingChange::Deleted(path))
             } else {
-                Ok(ChangeType::Changed(path))
+                Ok(PendingChange::Changed(path))
             }
         });
 

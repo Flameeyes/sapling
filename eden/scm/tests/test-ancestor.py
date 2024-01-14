@@ -13,9 +13,8 @@ import random
 import sys
 import time
 
-from edenscm import ancestor, debugcommands, hg, pycompat, ui as uimod, util
-from edenscm.node import nullrev
-from hghave import require
+from sapling import ancestor, debugcommands, hg, ui as uimod
+from sapling.node import nullrev
 
 
 long = int
@@ -63,7 +62,7 @@ def buildancestorsets(graph):
     return ancs
 
 
-class naiveincrementalmissingancestors(object):
+class naiveincrementalmissingancestors:
     def __init__(self, ancs, bases):
         self.ancs = ancs
         self.bases = set(bases)

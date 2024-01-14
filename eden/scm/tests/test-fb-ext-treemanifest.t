@@ -1,6 +1,4 @@
 #chg-compatible
-  $ setconfig status.use-rust=False workingcopy.use-rust=False
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
 
   $ . "$TESTDIR/library.sh"
@@ -10,7 +8,7 @@
   $ cd master
   $ cat >> .hg/hgrc <<EOF
   > [extensions]
-  > treemanifest=$TESTDIR/../edenscm/ext/treemanifestserver.py
+  > treemanifest=$TESTDIR/../sapling/ext/treemanifestserver.py
   > [remotefilelog]
   > server=True
   > [treemanifest]

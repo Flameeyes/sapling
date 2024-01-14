@@ -19,8 +19,10 @@ target_link_libraries(
   eden_config
   PUBLIC
     Folly::folly
+    edencommon::edencommon_os
     edencommon::edencommon_utils
     eden_config_thrift_cpp
+    eden_store_type
     eden_model
     eden_utils
     cpptoml

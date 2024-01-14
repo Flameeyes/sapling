@@ -47,11 +47,12 @@ status.unknown=magenta bold underline
 filtersuspectsymlink=true
 
 [experimental]
-exportstack-max-commit-count=100
-exportstack-max-file-count=400
-exportstack-max-bytes=20M
+exportstack-max-bytes=1M
 
 log-implicit-follow-threshold=10000
+
+titles-namespace=true
+local-committemplate=true
 
 [zsh]
 completion-age=7
@@ -59,4 +60,12 @@ completion-description=false
 
 [merge]
 enable-merge-tool-script=true
+
+[remotenames]
+autocleanupthreshold=50
+selectivepulldefault=master
+selectivepulldiscovery=true
+autopullhoistpattern=
+autopullpattern=re:^(?:default|remote)/[A-Za-z0-9._/-]+$
+hoist=default
 "#);

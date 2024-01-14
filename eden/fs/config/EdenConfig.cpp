@@ -70,6 +70,7 @@ std::shared_ptr<EdenConfig> EdenConfig::createTestEdenConfig() {
       /*systemConfigDir=*/canonicalPath("/tmp"),
       SourceVector{
           std::make_shared<NullConfigSource>(ConfigSourceType::SystemConfig),
+          std::make_shared<NullConfigSource>(ConfigSourceType::Dynamic),
           std::make_shared<NullConfigSource>(ConfigSourceType::UserConfig)});
 }
 
@@ -77,9 +78,10 @@ std::string EdenConfig::toString(ConfigSourceType cs) const {
   switch (cs) {
     case ConfigSourceType::Default:
       return "default";
+    case ConfigSourceType::Dynamic:
     case ConfigSourceType::SystemConfig:
     case ConfigSourceType::UserConfig:
-      if (const auto& source = configSources_[folly::to_underlying(cs)]) {
+      if (const auto& source = configSources_[ConfigSettingBase::getIdx(cs)]) {
         return source->getSourcePath();
       } else {
         return "";
@@ -106,7 +108,7 @@ EdenConfigData EdenConfig::toThriftConfigData() const {
 }
 
 std::string EdenConfig::toSourcePath(ConfigSourceType cs) const {
-  if (const auto& source = configSources_[folly::to_underlying(cs)]) {
+  if (const auto& source = configSources_[ConfigSettingBase::getIdx(cs)]) {
     return source->getSourcePath();
   } else {
     return {};
@@ -133,7 +135,7 @@ EdenConfig::EdenConfig(
 
   for (auto& source : configSources) {
     auto type = source->getSourceType();
-    auto index = folly::to_underlying(type);
+    auto index = ConfigSettingBase::getIdx(type);
     XCHECK_NE(ConfigSourceType::Default, type)
         << "May not provide a ConfigSource of type Default. Default is prepopulated.";
     XCHECK(!configSources_[index])
@@ -209,9 +211,28 @@ void EdenConfig::registerConfiguration(ConfigSettingBase* configSetting) {
 const std::optional<AbsolutePath> EdenConfig::getClientCertificate() const {
   // return the first cert path that exists
   for (auto& cert : clientCertificateLocations.getValue()) {
-    if (boost::filesystem::exists(cert.asString())) {
-      return cert;
+    auto certPath =
+        FieldConverter<AbsolutePath>{}.fromString(cert, *substitutions_);
+
+    if (certPath.hasError()) {
+      XLOG(
+          DBG2,
+          "Unable to resolve possible cert location, skipping : ",
+          certPath.error());
+      continue;
     }
+
+    if (boost::filesystem::exists(certPath.value().value())) {
+      return certPath.value();
+    }
+
+    XLOG(
+        DBG2,
+        "Cert does not exist on disk, skipping : ",
+        cert,
+        " (resolved as: ",
+        certPath.value().value(),
+        ")");
   }
   auto singleCertificateConfig = clientCertificate.getValue();
   if (singleCertificateConfig != kUnspecifiedDefault) {

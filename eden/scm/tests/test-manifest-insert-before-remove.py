@@ -8,7 +8,7 @@ import unittest
 
 import bindings
 import silenttestrunner
-from edenscm.node import bin
+from sapling.node import bin
 
 
 class ManifestInsertBeforeRemoveTest(unittest.TestCase):
@@ -47,7 +47,7 @@ class ManifestInsertBeforeRemoveTest(unittest.TestCase):
             pass  # expected to raise
 
 
-class TestStore(object):
+class TestStore:
     def __init__(self):
         self.underlying = {}
 

@@ -39,11 +39,19 @@ bitflags! {
 
 /// Metadata abstracts across the different places file metadata can come from.
 #[derive(Debug, Clone)]
-pub(crate) struct Metadata {
+pub struct Metadata {
     flags: MetadataFlags,
     size: u64,
     mtime: HgModifiedTime,
+    mode: u32,
 }
+
+// Watchman sends mode_t even on Windows where they aren't fully
+// reflected in libc. Let's just hardcode the values we need.
+const S_IFLNK: u32 = 0o120000;
+const S_IFMT: u32 = 0o170000;
+const S_IFREG: u32 = 0o100000;
+const S_IFDIR: u32 = 0o040000;
 
 impl Metadata {
     pub fn is_symlink(&self, vfs: &VFS) -> bool {
@@ -64,6 +72,10 @@ impl Metadata {
         }
     }
 
+    pub fn is_dir(&self) -> bool {
+        self.flags.intersects(MetadataFlags::IS_DIR)
+    }
+
     pub fn len(&self) -> Option<u64> {
         if self.flags.intersects(MetadataFlags::HAS_SIZE) {
             Some(self.size)
@@ -81,13 +93,6 @@ impl Metadata {
     }
 
     pub fn from_stat(mode: u32, size: u64, mtime: i64) -> Self {
-        // Watchman sends mode_t even on Windows where they aren't fully
-        // reflected in libc. Let's just hardcode the values we need.
-        const S_IFLNK: u32 = 0o120000;
-        const S_IFMT: u32 = 0o170000;
-        const S_IFREG: u32 = 0o100000;
-        const S_IFDIR: u32 = 0o040000;
-
         let mut flags = MetadataFlags::HAS_SIZE | MetadataFlags::HAS_MTIME;
 
         if mode & S_IFMT == S_IFLNK {
@@ -107,8 +112,29 @@ impl Metadata {
         Self {
             flags,
             size,
+            mode,
             mtime: mask_stat_mtime(mtime),
         }
+    }
+
+    pub fn mode(&self) -> u32 {
+        // Mode may be 0, but that doesn't really matter. Only symlinkness and
+        // execness are important.
+        let mut mode = self.mode;
+
+        if self.flags.intersects(MetadataFlags::IS_SYMLINK) {
+            mode |= S_IFLNK;
+        } else if self.flags.intersects(MetadataFlags::IS_EXEC) {
+            mode |= 0o111;
+        }
+
+        mode
+    }
+}
+
+impl PartialEq for Metadata {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode() == other.mode() && self.len() == other.len() && self.mtime() == other.mtime()
     }
 }
 
@@ -141,7 +167,12 @@ impl From<FileStateV2> for Metadata {
             }
         }
 
-        Self { flags, size, mtime }
+        Self {
+            flags,
+            size,
+            mtime,
+            mode: 0,
+        }
     }
 }
 
@@ -149,13 +180,20 @@ impl From<std::fs::Metadata> for Metadata {
     fn from(m: std::fs::Metadata) -> Self {
         let mut flags = MetadataFlags::HAS_SIZE;
 
+        #[cfg(unix)]
+        let mode = m.permissions().mode();
+
+        // This value doesn't really matter - we only care about is_executable
+        // and is_symlink in the dirstate. Rust doesn't make something up for
+        // us, so put something reasonable in.
+        #[cfg(windows)]
+        let mode = 0o666;
+
         if m.is_symlink() {
             flags |= MetadataFlags::IS_SYMLINK;
         } else if m.is_file() {
             flags |= MetadataFlags::IS_REGULAR;
-
-            #[cfg(unix)]
-            if m.permissions().mode() & 0o111 != 0 {
+            if mode & 0o111 != 0 {
                 flags |= MetadataFlags::IS_EXEC;
             }
         } else if m.is_dir() {
@@ -173,6 +211,7 @@ impl From<std::fs::Metadata> for Metadata {
         Self {
             flags,
             mtime,
+            mode,
             size: m.len(),
         }
     }
@@ -191,6 +230,7 @@ impl From<FileType> for Metadata {
             flags,
             mtime: HgModifiedTime(0),
             size: 0,
+            mode: 0,
         }
     }
 }

@@ -8,12 +8,11 @@
 
   $ setconfig devel.segmented-changelog-rev-compat=true
   $ eagerepo
-  $ setconfig workingcopy.ruststatus=false
   $ setconfig 'experimental.evolution='
   $ enable absorb
 
   $ cat >> $TESTTMP/dummyamend.py << 'EOF'
-  > from edenscm import commands, registrar
+  > from sapling import commands, registrar
   > cmdtable = {}
   > command = registrar.command(cmdtable)
   > @command('amend', [], '')

@@ -19,8 +19,7 @@ use types::RepoPathBuf;
 use super::watchmanfs::detect_changes;
 use crate::filechangedetector::FileChangeDetectorTrait;
 use crate::filechangedetector::ResolvedFileChangeResult;
-use crate::filesystem::ChangeType;
-use crate::filesystem::PendingChangeResult;
+use crate::filesystem::PendingChange;
 use crate::metadata;
 
 const NEED_CHECK: StateFlags = StateFlags::NEED_CHECK;
@@ -39,12 +38,12 @@ impl FileChangeDetectorTrait for TestFileChangeDetector {
     fn submit(&mut self, file: metadata::File) {
         if self.changed_files.contains(&file.path) {
             self.results
-                .push(Ok(ResolvedFileChangeResult::Yes(ChangeType::Changed(
+                .push(Ok(ResolvedFileChangeResult::Yes(PendingChange::Changed(
                     file.path,
                 ))));
         } else if self.deleted_files.contains(&file.path) {
             self.results
-                .push(Ok(ResolvedFileChangeResult::Yes(ChangeType::Deleted(
+                .push(Ok(ResolvedFileChangeResult::Yes(PendingChange::Deleted(
                     file.path,
                 ))));
         } else {
@@ -140,6 +139,8 @@ fn check(mut tc: TestCase) -> Result<()> {
     let mut changes = detect_changes(
         matcher,
         Arc::new(NeverMatcher::new()),
+        false,
+        false,
         stub_detector,
         &mut ts,
         wm_changes
@@ -178,17 +179,17 @@ fn check(mut tc: TestCase) -> Result<()> {
         assert!(pending_changes.len() == 1, "{:?}", &tc);
         if !pending_changes.is_empty() {
             match pending_changes.pop().unwrap().unwrap() {
-                PendingChangeResult::File(change) => match change {
-                    ChangeType::Changed(got_path) => {
-                        assert_eq!(path, got_path);
-                        assert_eq!(want_change, Change::Changed);
-                    }
-                    ChangeType::Deleted(got_path) => {
-                        assert_eq!(path, got_path);
-                        assert_eq!(want_change, Change::Deleted);
-                    }
-                },
-                PendingChangeResult::SeenDirectory(_) => assert!(false, "seen directory?"),
+                PendingChange::Changed(got_path) => {
+                    assert_eq!(path, got_path);
+                    assert_eq!(want_change, Change::Changed);
+                }
+                PendingChange::Deleted(got_path) => {
+                    assert_eq!(path, got_path);
+                    assert_eq!(want_change, Change::Deleted);
+                }
+                PendingChange::Ignored(got_path) => {
+                    panic!("got ignored file {:?}", got_path);
+                }
             }
         }
     } else {

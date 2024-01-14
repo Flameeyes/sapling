@@ -8,6 +8,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::bail;
@@ -38,7 +39,6 @@ use futures::future;
 use futures::TryStreamExt;
 use live_commit_sync_config::CONFIGERATOR_PUSHREDIRECT_ENABLE;
 use mononoke_types::ChangesetId;
-use once_cell::sync::OnceCell;
 use pushredirect_enable::types::MononokePushRedirectEnable;
 use scuba_ext::MononokeScubaSampleBuilder;
 use sharding_ext::RepoShard;
@@ -229,7 +229,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
     match process.matches.value_of("sharded-service-name") {
         Some(service_name) => {
             // The service name needs to be 'static to satisfy SM contract
-            static SM_SERVICE_NAME: OnceCell<String> = OnceCell::new();
+            static SM_SERVICE_NAME: OnceLock<String> = OnceLock::new();
             let logger = process.matches.logger().clone();
             let matches = Arc::clone(&process.matches);
             let mut executor = ShardedProcessExecutor::new(
@@ -355,7 +355,11 @@ async fn loop_forever<M: SyncedCommitMapping + Clone + 'static, R: CrossRepo>(
                 (large_repo_name.to_string(), small_repo_name.to_string()),
             );
         }
-        tokio::time::sleep(Duration::new(1, 0)).await;
+        tokio::time::sleep(Duration::from_millis(justknobs::get_as::<u64>(
+            "scm/mononoke:bookmarks_validator_sleep_ms",
+            None,
+        )?))
+        .await;
     }
 }
 
@@ -405,7 +409,8 @@ async fn validate<M: SyncedCommitMapping + Clone + 'static, R: CrossRepo>(
 
         // Check that large_bookmark actually pointed to a commit equivalent to small_cs_id
         // not so long ago.
-        let max_log_records: u32 = 100;
+        let max_log_records =
+            justknobs::get_as::<u32>("scm/mononoke:bookmarks_validator_max_log_records", None)?;
         let max_delay_secs: u32 = 300;
         let in_history = check_large_bookmark_history(
             ctx,

@@ -5,7 +5,6 @@
  * GNU General Public License version 2.
  */
 
-use std::any::Demand;
 use std::backtrace::Backtrace;
 use std::convert::Infallible;
 use std::error::Error as StdError;
@@ -18,7 +17,7 @@ use blobstore::LoadableError;
 use bookmarks_movement::describe_hook_rejections;
 use bookmarks_movement::BookmarkMovementError;
 use bookmarks_movement::HookRejection;
-use derived_data::DeriveError;
+use derived_data::DerivationError;
 use itertools::Itertools;
 use megarepo_error::MegarepoError;
 use pushrebase::PushrebaseError;
@@ -30,9 +29,19 @@ use crate::path::MononokePath;
 #[derive(Clone, Debug)]
 pub struct InternalError(Arc<Error>);
 
+// The cargo build of anyhow disables its backtrace features when using RUSTC_BOOTSTRAP=1
+#[cfg(not(fbcode_build))]
+static DISABLED: Backtrace = Backtrace::disabled();
+
 impl InternalError {
+    #[cfg(fbcode_build)]
     pub fn backtrace(&self) -> &Backtrace {
         self.0.backtrace()
+    }
+
+    #[cfg(not(fbcode_build))]
+    pub fn backtrace(&self) -> &Backtrace {
+        &DISABLED
     }
 }
 
@@ -53,8 +62,9 @@ impl StdError for InternalError {
         Some(&**self.0)
     }
 
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref::<Backtrace>(self.backtrace());
+    #[cfg(fbcode_build)]
+    fn provide<'a>(&'a self, request: &mut ::std::error::Request<'a>) {
+        request.provide_ref::<Backtrace>(self.backtrace());
     }
 }
 
@@ -102,11 +112,11 @@ impl From<LoadableError> for MononokeError {
     }
 }
 
-impl From<DeriveError> for MononokeError {
-    fn from(e: DeriveError) -> Self {
+impl From<DerivationError> for MononokeError {
+    fn from(e: DerivationError) -> Self {
         match e {
-            e @ DeriveError::Disabled(..) => MononokeError::NotAvailable(e.to_string()),
-            DeriveError::Error(e) => MononokeError::from(e),
+            e @ DerivationError::Disabled(..) => MononokeError::NotAvailable(e.to_string()),
+            e => MononokeError::from(anyhow::Error::from(e)),
         }
     }
 }
@@ -147,7 +157,7 @@ impl From<BlameError> for MononokeError {
             NoSuchPath(_) | IsDirectory(_) | Rejected(_) => {
                 MononokeError::InvalidRequest(e.to_string())
             }
-            DeriveError(e) => MononokeError::from(e),
+            DerivationError(e) => MononokeError::from(e),
             _ => MononokeError::from(anyhow::Error::from(e)),
         }
     }

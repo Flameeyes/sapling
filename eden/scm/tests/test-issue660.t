@@ -8,10 +8,6 @@
 # https://bz.mercurial-scm.org/660 and:
 # https://bz.mercurial-scm.org/322
 
-#if fsmonitor
-  $ setconfig workingcopy.ruststatus=false
-#endif
-
   $ setconfig devel.segmented-changelog-rev-compat=true
   $ eagerepo
 
@@ -38,7 +34,7 @@
 
 # Removing shadow:
 
-  $ hg rm --after a
+  $ hg rm --mark a
 
 # Should succeed - shadow removed:
 
@@ -57,7 +53,7 @@
 
 # Removing shadow:
 
-  $ hg rm --after b/b
+  $ hg rm --mark b/b
 
 # Should succeed - shadow removed:
 
@@ -142,7 +138,7 @@
 
 # Removing shadow:
 
-  $ hg rm --after d/d/d
+  $ hg rm --mark d/d/d
 
 # Should succeed - shadow removed:
 

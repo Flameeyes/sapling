@@ -1,18 +1,15 @@
 #debugruntest-compatible
 #inprocess-hg-incompatible
 
-  $ setconfig workingcopy.ruststatus=False
-  $ disable treemanifest
-
 Setup
 
   $ configure mutation-norecord dummyssh
-  $ enable amend pullcreatemarkers pushrebase rebase remotenames
+  $ enable amend fbcodereview pushrebase rebase remotenames
   $ setconfig ui.username="nobody <no.reply@fb.com>" experimental.rebaseskipobsolete=true
   $ setconfig remotenames.allownonfastforward=true
 
 Test that hg pull creates obsolescence markers for landed diffs
-  $ hg init server
+  $ newserver server
   $ mkcommit() {
   >    echo "$1" > "$1"
   >    hg add "$1"
@@ -28,7 +25,6 @@ Test that hg pull creates obsolescence markers for landed diffs
 
 Set up server repository
 
-  $ cd server
   $ mkcommit initial
   $ mkcommit secondcommit
   $ hg book master

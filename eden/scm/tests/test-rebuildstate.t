@@ -1,10 +1,8 @@
 #debugruntest-compatible
 
-  $ setconfig workingcopy.ruststatus=false
-
   $ eagerepo
   $ newext adddrop <<EOF
-  > from edenscm import registrar
+  > from sapling import registrar
   > cmdtable = {}
   > command = registrar.command(cmdtable)
   > @command('debugadddrop',
@@ -63,10 +61,17 @@ state dump after
 
 status
 
+# avoid same second race condition that leaves NEED_CHECK
+  $ sleep 1
+
   $ hg st -A
   ! bar
   ? baz
   C foo
+
+Make sure the second status call doesn't need to compare file contents anymore.
+  $ LOG=workingcopy::filechangedetector=trace hg status 2>&1 | grep get_content | grep enter
+  *compare contents{keys=0}* (glob)
 
 Test debugdirstate --minimal where a file is not in parent manifest
 but in the dirstate

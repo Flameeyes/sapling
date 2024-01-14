@@ -7,12 +7,11 @@
 
 from __future__ import absolute_import, print_function
 
-from edenscm import error, peer, util, wireproto
-from hghave import require
+from sapling import error, peer, wireproto
 
 
 # equivalent of repo.repository
-class thing(object):
+class thing:
     def hello(self):
         return "Ready."
 
@@ -126,7 +125,7 @@ def unescapearg(escaped):
 # server side
 
 # equivalent of wireproto's global functions
-class server(object):
+class server:
     def __init__(self, local):
         self.local = local
 

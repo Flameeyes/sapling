@@ -23,13 +23,10 @@ ipv6={use_ipv6}
 
 [commands]
 status.relative=True
+update.check=linear
 
 [config]
 use-rust=True
-
-[workingcopy]
-use-rust=True
-ruststatus=True
 
 [status]
 use-rust=True
@@ -45,7 +42,6 @@ useruststore=True
 
 [remotefilelog]
 reponame=reponame-default
-localdatarepack=True
 cachepath=$TESTTMP/default-hgcache
 
 [mutation]
@@ -59,6 +55,7 @@ contentstorefallback=True
 
 [experimental]
 use-rust-changelog=True
+windows-symlinks=True
 """
     if use_watchman:
         content += """
@@ -66,7 +63,7 @@ use-rust-changelog=True
 fsmonitor=
 
 [fsmonitor]
-detectrace=True
+fallback-on-watchman-exception=false
 """
 
     return content

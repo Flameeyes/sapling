@@ -24,7 +24,6 @@ use memcache::KeyGen;
 use retry::retry;
 use retry::RetryLogic;
 use sql_query_config::CachingConfig;
-use tunables::tunables;
 
 const RETRY_ATTEMPTS: usize = 2;
 
@@ -414,7 +413,7 @@ where
     T: Send + 'static,
     Fut: Future<Output = Result<T>>,
 {
-    if tunables().disable_sql_auto_retries().unwrap_or_default() {
+    if let Ok(true) = justknobs::eval("scm/mononoke:sql_disable_auto_retries", None, None) {
         return do_query().await;
     }
     Ok(retry(
@@ -441,7 +440,7 @@ where
     T: Send + Abomonation + MemcacheEntity + Clone + 'static,
     Fut: Future<Output = Result<T>> + Send,
 {
-    if tunables().disable_sql_auto_cache().unwrap_or_default() {
+    if let Ok(true) = justknobs::eval("scm/mononoke:sql_disable_auto_cache", None, None) {
         return query_with_retry_no_cache(&do_query).await;
     }
     let fetch = || query_with_retry_no_cache(&do_query);
@@ -491,7 +490,8 @@ mod tests {
         dead_code,
         unreachable_code,
         unused_variables,
-        clippy::diverging_sub_expression
+        clippy::diverging_sub_expression,
+        clippy::todo
     )]
     async fn should_compile() -> anyhow::Result<()> {
         use sql_query_config::SqlQueryConfig;

@@ -16,8 +16,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use configloader::config::ConfigSet;
-use configmodel::ConfigExt;
 use dag::ops::DagAddHeads;
 use dag::ops::DagPersistent;
 use dag::Dag;
@@ -31,7 +29,7 @@ use metalog::CommitOptions;
 use metalog::MetaLog;
 use minibytes::Bytes;
 use parking_lot::RwLock;
-use storemodel::TreeFormat;
+use storemodel::SerializationFormat;
 use zstore::Id20;
 use zstore::Zstore;
 
@@ -66,7 +64,7 @@ use crate::Result;
 /// for atomic metadata changes.
 pub struct EagerRepo {
     pub(crate) dag: Dag,
-    store: EagerRepoStore,
+    pub(crate) store: EagerRepoStore,
     metalog: MetaLog,
     pub(crate) dir: PathBuf,
 }
@@ -168,7 +166,7 @@ impl EagerRepoStore {
         };
         // Check subfiles or subtrees.
         if matches!(flag, Flag::Directory) {
-            let entry = TreeEntry(content, TreeFormat::Hg);
+            let entry = TreeEntry(content, SerializationFormat::Hg);
             for element in entry.elements() {
                 let element = element?;
                 let name = element.component.into_string();
@@ -221,7 +219,7 @@ impl PathInfo {
 
 impl EagerRepo {
     /// Open an [`EagerRepo`] at the given directory. Create an empty repo on demand.
-    pub fn open(dir: &Path, config: Option<&ConfigSet>) -> Result<Self> {
+    pub fn open(dir: &Path) -> Result<Self> {
         let ident = identity::sniff_dir(dir)?.unwrap_or_else(identity::default);
         // Attempt to match directory layout of a real client repo.
         let hg_dir = dir.join(ident.dot_dir());
@@ -230,27 +228,7 @@ impl EagerRepo {
         let store = EagerRepoStore::open(&store_dir.join("hgcommits").join("v1"))?;
         let metalog = MetaLog::open(store_dir.join("metalog"), None)?;
         // Write "requires" files.
-        let windows_symlinks = config.map_or(false, |config| {
-            if let Ok(enabled_everywhere) =
-                config.get_or_default::<bool>("experimental", "windows-symlinks")
-            {
-                enabled_everywhere
-            } else {
-                // Assume intent was to just enable symlinks
-                !config
-                    .get_or_default::<Vec<String>>("experimental", "windows-symlinks")
-                    .unwrap_or_default()
-                    .is_empty()
-            }
-        });
-        write_requires(
-            &hg_dir,
-            if windows_symlinks {
-                &["store", "treestate", "windowssymlinks"]
-            } else {
-                &["store", "treestate"]
-            },
-        )?;
+        write_requires(&hg_dir, &["store", "treestate", "windowssymlinks"])?;
         write_requires(
             &store_dir,
             &[
@@ -305,19 +283,9 @@ impl EagerRepo {
             }
         }
         let path = Path::new(value);
-        if path.is_absolute() && path.is_dir() {
-            if let Ok(Some(ident)) = identity::sniff_dir(path) {
-                // Check store requirements
-                let store_requirement_path =
-                    path.join(ident.dot_dir()).join("store").join("requires");
-                if let Ok(s) = std::fs::read_to_string(store_requirement_path) {
-                    if s.lines().any(|s| s == "eagerepo") {
-                        tracing::trace!("url_to_dir {} => {}", value, path.display());
-                        return Some(path.to_path_buf());
-                    }
-                }
-                tracing::trace!("url_to_dir {}: missing 'eagerepo' requirment", value);
-            }
+        if is_eager_repo(path) {
+            tracing::trace!("url_to_dir {} => {}", value, path.display());
+            return Some(path.to_path_buf());
         }
         None
     }
@@ -472,6 +440,29 @@ impl EagerRepo {
     }
 }
 
+pub fn is_eager_repo(path: &Path) -> bool {
+    if !path.is_absolute() || !path.is_dir() {
+        return false;
+    }
+
+    if let Ok(Some(ident)) = identity::sniff_dir(path) {
+        // Check store requirements
+        let store_requirement_path = path.join(ident.dot_dir()).join("store").join("requires");
+        if let Ok(s) = std::fs::read_to_string(store_requirement_path) {
+            if s.lines().any(|s| s == "eagerepo") {
+                tracing::trace!("url_to_dir {} => {}", path.display(), path.display());
+                return true;
+            }
+        }
+        tracing::trace!(
+            "url_to_dir {}: missing 'eagerepo' requirment",
+            path.display()
+        );
+    }
+
+    false
+}
+
 /// Convert parents and raw_text to HG SHA1 text format.
 fn hg_sha1_text(parents: &[Vertex], raw_text: &[u8]) -> Vec<u8> {
     fn null_id() -> Vertex {
@@ -489,7 +480,7 @@ fn hg_sha1_text(parents: &[Vertex], raw_text: &[u8]) -> Vec<u8> {
         result.extend_from_slice(p2.as_ref());
         result.extend_from_slice(p1.as_ref());
     }
-    result.extend_from_slice(&raw_text);
+    result.extend_from_slice(raw_text);
     result
 }
 
@@ -542,18 +533,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
 
-        let mut repo = EagerRepo::open(dir, None).unwrap();
+        let mut repo = EagerRepo::open(dir).unwrap();
         let text = &b"blob-text-foo-bar"[..];
         let id = repo.add_sha1_blob(text).unwrap();
         assert_eq!(repo.get_sha1_blob(id).unwrap().as_deref(), Some(text));
 
         // Pending changes are invisible until flush.
-        let repo2 = EagerRepo::open(dir, None).unwrap();
+        let repo2 = EagerRepo::open(dir).unwrap();
         assert!(repo2.get_sha1_blob(id).unwrap().is_none());
 
         repo.flush().await.unwrap();
 
-        let repo2 = EagerRepo::open(dir, None).unwrap();
+        let repo2 = EagerRepo::open(dir).unwrap();
         assert_eq!(repo2.get_sha1_blob(id).unwrap().as_deref(), Some(text));
     }
 
@@ -562,13 +553,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
 
-        let mut repo = EagerRepo::open(dir, None).unwrap();
+        let mut repo = EagerRepo::open(dir).unwrap();
         let commit1 = repo.add_commit(&[], b"A").await.unwrap();
         let commit2 = repo.add_commit(&[], b"B").await.unwrap();
         let _commit3 = repo.add_commit(&[commit1, commit2], b"C").await.unwrap();
         repo.flush().await.unwrap();
 
-        let repo2 = EagerRepo::open(dir, None).unwrap();
+        let repo2 = EagerRepo::open(dir).unwrap();
         let rendered = dag::render::render_namedag(repo2.dag(), |v| {
             let id = Id20::from_slice(v.as_ref()).unwrap();
             let blob = repo2.get_sha1_blob(id).unwrap().unwrap();
@@ -591,7 +582,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
 
-        let mut repo = EagerRepo::open(dir, None).unwrap();
+        let mut repo = EagerRepo::open(dir).unwrap();
         let commit1 = repo.add_commit(&[], b"A").await.unwrap();
         let commit2 = repo.add_commit(&[], b"B").await.unwrap();
         repo.set_bookmark("c1", Some(commit1)).unwrap();
@@ -599,7 +590,7 @@ mod tests {
         repo.set_bookmark("main", Some(commit2)).unwrap();
         repo.flush().await.unwrap();
 
-        let mut repo = EagerRepo::open(dir, None).unwrap();
+        let mut repo = EagerRepo::open(dir).unwrap();
         assert_eq!(
             format!("{:#?}", repo.get_bookmarks_map().unwrap()),
             r#"{
@@ -624,7 +615,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
 
-        let repo = EagerRepo::open(dir, None).unwrap();
+        let repo = EagerRepo::open(dir).unwrap();
         drop(repo);
 
         let ident = identity::sniff_dir(dir)
@@ -636,11 +627,11 @@ mod tests {
         )
         .unwrap();
 
-        let err = EagerRepo::open(dir, None).map(|_| ()).unwrap_err();
+        let err = EagerRepo::open(dir).map(|_| ()).unwrap_err();
         match err {
             crate::Error::RequirementsMismatch(_, unsupported, missing) => {
                 assert_eq!(unsupported, ["remotefilelog"]);
-                assert_eq!(missing, ["treestate"]);
+                assert_eq!(missing, ["treestate", "windowssymlinks"]);
             }
             _ => panic!("expect RequirementsMismatch, got {:?}", err),
         }
@@ -651,7 +642,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
 
-        let mut repo = EagerRepo::open(dir, None).unwrap();
+        let mut repo = EagerRepo::open(dir).unwrap();
         let missing_id = missing_id();
 
         // Root tree missing.
@@ -672,7 +663,7 @@ mod tests {
                 TreeElement::new(p("a"), missing_id, Flag::Directory),
                 TreeElement::new(p("b"), missing_id, Flag::File(FileType::Regular)),
             ],
-            TreeFormat::Hg,
+            SerializationFormat::Hg,
         )
         .to_bytes();
         let subtree_id = repo
@@ -683,7 +674,7 @@ mod tests {
                 TreeElement::new(p("c"), subtree_id, Flag::Directory),
                 TreeElement::new(p("d"), missing_id, Flag::File(FileType::Regular)),
             ],
-            TreeFormat::Hg,
+            SerializationFormat::Hg,
         )
         .to_bytes();
         let root_tree_id = repo
@@ -704,33 +695,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
 
-        let mut repo = EagerRepo::open(dir, None).unwrap();
+        let mut repo = EagerRepo::open(dir).unwrap();
         let missing_id = missing_id();
 
         let err = repo.set_bookmark("a", Some(missing_id)).unwrap_err();
         assert_eq!(
             err.to_string(),
             "when moving bookmark \"a\" to 35e7525ce3a48913275d7061dd9a867ffef1e34d, the commit does not exist"
-        );
-    }
-
-    #[test]
-    fn test_open_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir = dir.path();
-        let mut config = ConfigSet::new();
-        let options = configloader::config::Options::new();
-
-        config.set("experimental", "windows-symlinks", Some("true"), &options);
-
-        EagerRepo::open(dir, Some(&config)).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(dir.join(identity::default().dot_dir()).join("requires")).unwrap(),
-            r#"store
-treestate
-windowssymlinks
-"#
         );
     }
 

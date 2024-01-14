@@ -7,8 +7,8 @@
 
 #pragma once
 
-#include "BackingStore.h"
 #include "eden/fs/model/RootId.h"
+#include "eden/fs/store/BackingStore.h"
 #include "eden/fs/store/ObjectFetchContext.h"
 
 namespace facebook::eden {
@@ -27,7 +27,7 @@ class EmptyBackingStore final : public BijectiveBackingStore {
   ObjectId parseObjectId(folly::StringPiece objectId) override;
   std::string renderObjectId(const ObjectId& objectId) override;
 
-  ImmediateFuture<TreePtr> getRootTree(
+  ImmediateFuture<GetRootTreeResult> getRootTree(
       const RootId& rootId,
       const ObjectFetchContextPtr& context) override;
   ImmediateFuture<std::shared_ptr<TreeEntry>> getTreeEntryForObjectId(

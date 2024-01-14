@@ -1,10 +1,7 @@
 #chg-compatible
 
-  $ setconfig status.use-rust=False workingcopy.use-rust=False
-  $ setconfig workingcopy.ruststatus=False
+  $ configure modernclient
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ mkdir -p t
-  $ cd t
   $ cat <<EOF > merge
   > import sys, os
   > f = open(sys.argv[1], "wb")
@@ -21,8 +18,7 @@ $4 = expected result
 
   $ tm()
   > {
-  >     hg init t
-  >     cd t
+  >     newclientrepo
   >     echo "[merge]" >> .hg/hgrc
   >     echo "followcopies = 1" >> .hg/hgrc
   > 
@@ -60,9 +56,6 @@ $4 = expected result
   > 
   >     echo "--------------"
   >     echo
-  > 
-  >     cd ..
-  >     rm -r t
   > }
   $ up() {
   >     cp rev $1
@@ -87,7 +80,7 @@ $4 = expected result
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: e300d1c794ec+, remote: 4ce40f5aca24
    preserving a for resolve of b
    preserving rev for resolve of rev
@@ -112,7 +105,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@e300d1c794ec+ other rev@4ce40f5aca24 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -133,12 +126,10 @@ $4 = expected result
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 86a2aa42fc76+, remote: f4db7e329e71
    preserving b for resolve of b
    preserving rev for resolve of rev
-   a: remote is newer -> g
-  getting a
    b: local copied/moved from a -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -160,7 +151,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@86a2aa42fc76+ other rev@f4db7e329e71 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   1 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -181,7 +172,7 @@ $4 = expected result
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: e300d1c794ec+, remote: bdb19105162a
    preserving a for resolve of b
    preserving rev for resolve of rev
@@ -207,7 +198,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@e300d1c794ec+ other rev@bdb19105162a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -227,7 +218,7 @@ $4 = expected result
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 02963e448370+, remote: f4db7e329e71
    preserving b for resolve of b
    preserving rev for resolve of rev
@@ -252,7 +243,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@02963e448370+ other rev@f4db7e329e71 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -272,11 +263,9 @@ $4 = expected result
      src: 'a' -> dst: 'b' 
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 94b33a1b7f2d+, remote: 4ce40f5aca24
    preserving rev for resolve of rev
-   b: remote created -> g
-  getting b
    rev: versions differ -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -290,7 +279,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@94b33a1b7f2d+ other rev@4ce40f5aca24 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   1 files updated, 1 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -310,7 +299,7 @@ $4 = expected result
      src: 'a' -> dst: 'b' 
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 86a2aa42fc76+, remote: 97c705ade336
    preserving rev for resolve of rev
    rev: versions differ -> m (premerge)
@@ -326,7 +315,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@86a2aa42fc76+ other rev@97c705ade336 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 1 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -346,13 +335,9 @@ $4 = expected result
      src: 'a' -> dst: 'b' 
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 94b33a1b7f2d+, remote: bdb19105162a
    preserving rev for resolve of rev
-   a: other deleted -> r
-  removing a
-   b: remote created -> g
-  getting b
    rev: versions differ -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -366,7 +351,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@94b33a1b7f2d+ other rev@bdb19105162a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   1 files updated, 1 files merged, 1 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -385,7 +370,7 @@ $4 = expected result
      src: 'a' -> dst: 'b' 
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 02963e448370+, remote: 97c705ade336
    preserving rev for resolve of rev
    rev: versions differ -> m (premerge)
@@ -401,7 +386,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@02963e448370+ other rev@97c705ade336 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 1 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -417,7 +402,7 @@ $4 = expected result
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 62e7bf090eba+, remote: 49b6d8032493
    preserving b for resolve of b
    preserving rev for resolve of rev
@@ -441,7 +426,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@62e7bf090eba+ other b@49b6d8032493 ancestor a@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -449,7 +434,7 @@ $4 = expected result
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@62e7bf090eba+ other rev@49b6d8032493 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -474,14 +459,12 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
      src: 'a' -> dst: 'c' !
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 02963e448370+, remote: fe905ef2c33e
   note: possible conflict - a was renamed multiple times to:
    b
    c
    preserving rev for resolve of rev
-   c: remote created -> g
-  getting c
    rev: versions differ -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -495,7 +478,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@02963e448370+ other rev@fe905ef2c33e ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   1 files updated, 1 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -512,7 +495,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 86a2aa42fc76+, remote: af30c7647fc7
    preserving b for resolve of b
    preserving rev for resolve of rev
@@ -536,7 +519,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@86a2aa42fc76+ other b@af30c7647fc7 ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -544,7 +527,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@86a2aa42fc76+ other rev@af30c7647fc7 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -561,12 +544,10 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 59318016310c+, remote: bdb19105162a
    preserving b for resolve of b
    preserving rev for resolve of rev
-   a: other deleted -> r
-  removing a
    b: both created -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -587,7 +568,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@59318016310c+ other b@bdb19105162a ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -595,7 +576,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@59318016310c+ other rev@bdb19105162a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 1 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -611,12 +592,10 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 86a2aa42fc76+, remote: 8dbce441892a
    preserving b for resolve of b
    preserving rev for resolve of rev
-   a: remote is newer -> g
-  getting a
    b: both created -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -637,7 +616,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@86a2aa42fc76+ other b@8dbce441892a ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -645,7 +624,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@86a2aa42fc76+ other rev@8dbce441892a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   1 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -662,12 +641,10 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 59318016310c+, remote: bdb19105162a
    preserving b for resolve of b
    preserving rev for resolve of rev
-   a: other deleted -> r
-  removing a
    b: both created -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -688,7 +665,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@59318016310c+ other b@bdb19105162a ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -696,7 +673,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@59318016310c+ other rev@bdb19105162a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 1 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -712,12 +689,10 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 86a2aa42fc76+, remote: 8dbce441892a
    preserving b for resolve of b
    preserving rev for resolve of rev
-   a: remote is newer -> g
-  getting a
    b: both created -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -738,7 +713,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@86a2aa42fc76+ other b@8dbce441892a ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -746,7 +721,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@86a2aa42fc76+ other rev@8dbce441892a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   1 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -763,7 +738,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 0b76e65c8289+, remote: 4ce40f5aca24
    preserving b for resolve of b
    preserving rev for resolve of rev
@@ -787,7 +762,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@0b76e65c8289+ other b@4ce40f5aca24 ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -795,7 +770,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@0b76e65c8289+ other rev@4ce40f5aca24 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -812,7 +787,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 02963e448370+, remote: 8dbce441892a
    preserving b for resolve of b
    preserving rev for resolve of rev
@@ -843,7 +818,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@02963e448370+ other b@8dbce441892a ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -851,14 +826,16 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@02963e448370+ other rev@8dbce441892a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 1 files unresolved
   use 'hg resolve' to retry unresolved file merges or 'hg goto -C .' to abandon
   --------------
   M a
   M b
-  abort: unresolved merge conflicts (see 'hg help resolve')
+  abort: unresolved merge state
+  (use 'hg resolve' to continue or
+       'hg goto --clean' to abort - WARNING: will destroy uncommitted changes)
   --------------
   
   $ tm "up a b" "nm a b" "      " "19 merge b no ancestor, prompt remove a"
@@ -869,7 +846,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
     unmatched files new in both:
      b
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 0b76e65c8289+, remote: bdb19105162a
    preserving a for resolve of a
    preserving b for resolve of b
@@ -901,7 +878,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@0b76e65c8289+ other b@bdb19105162a ancestor b@000000000000
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -909,14 +886,16 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@0b76e65c8289+ other rev@bdb19105162a ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 1 files unresolved
   use 'hg resolve' to retry unresolved file merges or 'hg goto -C .' to abandon
   --------------
   M b
   C a
-  abort: unresolved merge conflicts (see 'hg help resolve')
+  abort: unresolved merge state
+  (use 'hg resolve' to continue or
+       'hg goto --clean' to abort - WARNING: will destroy uncommitted changes)
   --------------
   
   $ tm "up a  " "um a b" "      " "20 merge a and b to b, remove a"
@@ -930,7 +909,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: e300d1c794ec+, remote: 49b6d8032493
    preserving a for resolve of b
    preserving rev for resolve of rev
@@ -955,7 +934,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@e300d1c794ec+ other b@49b6d8032493 ancestor a@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -963,7 +942,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@e300d1c794ec+ other rev@49b6d8032493 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -983,7 +962,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 62e7bf090eba+, remote: f4db7e329e71
    preserving b for resolve of b
    preserving rev for resolve of rev
@@ -1007,7 +986,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=b binary=False symlink=False changedelete=False (glob)
   my b@62e7bf090eba+ other a@f4db7e329e71 ancestor a@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/b* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/b* * * (glob)
   merge tool returned: 0
    rev: versions differ -> m (merge)
   picktool() ignoring eval error ('invalid token', *) (glob)
@@ -1015,7 +994,7 @@ m "um a c" "um x c" "      " "10 do merge with no ancestor"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@62e7bf090eba+ other rev@f4db7e329e71 ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   0 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -1040,12 +1019,10 @@ m "nm a b" "um x a" "      " "22 get a, keep b"
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: 924404dff337, local: 02963e448370+, remote: 2b958612230f
    preserving b for resolve of b
    preserving rev for resolve of rev
-   c: remote created -> g
-  getting c
    b: local copied/moved from a -> m (premerge)
   picktool() ignoring eval error ('invalid token', *) (glob)
   merge tool script: * ../merge (glob)
@@ -1067,7 +1044,7 @@ m "nm a b" "um x a" "      " "22 get a, keep b"
   picktool() forcemerge toolpath not found * ../merge (glob)
   picked tool '* ../merge' for path=rev binary=False symlink=False changedelete=False (glob)
   my rev@02963e448370+ other rev@2b958612230f ancestor rev@924404dff337
-  launching merge tool: * ../merge *$TESTTMP/t/t/rev* * * (glob)
+  launching merge tool: * ../merge *$TESTTMP/*/rev* * * (glob)
   merge tool returned: 0
   1 files updated, 2 files merged, 0 files removed, 0 files unresolved
   (branch merge, don't forget to commit)
@@ -1096,8 +1073,7 @@ Expected result:
 7  -  (f)  f   f   "remote differs from untracked local"
 8  f  (f)  f   f   "remote differs from untracked local"
 
-  $ hg init ancestortest
-  $ cd ancestortest
+  $ newclientrepo
   $ for x in 1 2 3 4 5 6 8; do mkdir $x; echo a > $x/f; done
   $ hg ci -Aqm "a"
   $ mkdir 0

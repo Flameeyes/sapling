@@ -7,11 +7,8 @@
 # This software may be used and distributed according to the terms of the
 # GNU General Public License version 2 or any later version.
 
+  $ configure modernclient
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig status.use-rust=false
-  $ setconfig workingcopy.ruststatus=False
-
-  $ setconfig 'extensions.treemanifest=!'
 
   $ cat >> $HGRCPATH << 'EOF'
   > [extdiff]
@@ -21,8 +18,7 @@
 
 # Create a repo with some stuff in it:
 
-  $ hg init a
-  $ cd a
+  $ newclientrepo
   $ echo a > a
   $ echo a > d
   $ echo a > e
@@ -188,7 +184,7 @@
      src: 'a' -> dst: 'b' *
     checking for directory renames
   resolving manifests
-   branchmerge: True, force: True, partial: False
+   branchmerge: True, force: True
    ancestor: 68795b066622, local: ef0ef43d49e7+, remote: 5d205f8b35b6
    preserving b for resolve of b
    b: local copied/moved from a -> m (premerge)
@@ -206,10 +202,8 @@
     unmatched files in other (from topological common ancestor):
      c
   resolving manifests
-   branchmerge: True, force: True, partial: False
+   branchmerge: True, force: True
    ancestor: 4c60f11aa304, local: 6b9e5368ca4e+, remote: 5345cd5c0f38
-   e: remote is newer -> g
-  getting e
   committing files:
   e
   committing manifest
@@ -220,11 +214,9 @@
     unmatched files in other (from topological common ancestor):
      c
   resolving manifests
-   branchmerge: True, force: True, partial: False
+   branchmerge: True, force: True
    ancestor: 4c60f11aa304, local: 9436191a062e+, remote: 9c233e8e184d
    preserving e for resolve of e
-   d: remote is newer -> g
-  getting d
    e: versions differ -> m (premerge)
   picktool() hgmerge internal:merge
   picked tool ':merge' for path=e binary=False symlink=False changedelete=False
@@ -263,13 +255,14 @@
   # To mark files as resolved:  hg resolve --mark FILE
   
   # To continue:                hg graft --continue
-  # To abort:                   hg goto --clean .    (warning: this will discard uncommitted changes)
+  # To abort:                   hg graft --abort
 
 # Commit while interrupted should fail:
 
   $ hg ci -m 'commit interrupted graft'
   abort: graft in progress
-  (use 'hg graft --continue' or 'hg graft --abort' to abort)
+  (use 'hg graft --continue' to continue or
+       'hg graft --abort' to abort)
   [255]
 
 # Abort the graft and try committing:
@@ -658,8 +651,7 @@
 # correct for it by detecting this condition and reversing as necessary.
 # First, set up the repository with commits to be grafted
 
-  $ hg init ../graftmove
-  $ cd ../graftmove
+  $ newclientrepo graftmove
   $ echo c1a > f1a
   $ echo c2a > f2a
   $ echo c3a > f3a
@@ -716,7 +708,6 @@
   $ hg cat f1a
   c1c
   $ hg cat f1b
-  f1b: no such file in rev c9763722f9bd
   [1]
 
 # Test the cases A.0 (f4x) and A.6 (f3x)
@@ -1039,8 +1030,7 @@
 
 # Graft a change into a new file previously grafted into a renamed directory
 
-  $ hg init dirmovenewfile
-  $ cd dirmovenewfile
+  $ newclientrepo dirmovenewfile
   $ mkdir a
   $ echo a > a/a
   $ hg ci -qAma
@@ -1086,7 +1076,7 @@
 
   $ hg up -qCr 4
   $ hg graft --tool ':local' -r '2'
-  grafting 42127f193bcd "b"
+  grafting 7ea085edaaef "b"
 
 # Extending the graft range to include a (skipped) merge of 3 will not prevent us from
 # also detecting that both 3 and 5 should be skipped:
@@ -1094,8 +1084,8 @@
   $ hg up -qCr 4
   $ hg graft --tool ':local' -r '2 + 6 + 7'
   skipping ungraftable merge revision 6
-  grafting 42127f193bcd "b"
-  grafting d3c3f2b38ecc "xx"
-  note: graft of d3c3f2b38ecc created no changes to commit
+  grafting 7ea085edaaef "b"
+  grafting 8db0f04dd8b2 "xx"
+  note: graft of 8db0f04dd8b2 created no changes to commit
 
   $ cd ..

@@ -2,7 +2,6 @@
 #inprocess-hg-incompatible
 
   $ eagerepo
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig format.dirstate=2
 
 ------ Test dirstate._dirs refcounting
@@ -54,10 +53,7 @@ Test modulo storage/comparison of absurd dates:
 
 #if no-aix
   $ touch -t 195001011200 a
-Rust status doesn't crash
   $ hg st
-Invoke Python status for below debugstate (Rust status doesn't update mtime yet).
-  $ hg st --config status.use-rust=false
   $ hg debugstate
   n 644          2 2018-01-19 15:14:08 a
 #endif
@@ -67,7 +63,7 @@ coherent (issue4353)
 
   $ cat > ../dirstateexception.py <<EOF
   > from __future__ import absolute_import
-  > from edenscm import (
+  > from sapling import (
   >   error,
   >   extensions,
   >   merge,

@@ -32,6 +32,7 @@
 #include "eden/fs/store/hg/HgImportPyError.h"
 #include "eden/fs/store/hg/HgProxyHash.h"
 #include "eden/fs/telemetry/EdenStats.h"
+#include "eden/fs/telemetry/StructuredLogger.h"
 #include "eden/fs/utils/PathFuncs.h"
 #include "eden/fs/utils/SpawnedProcess.h"
 
@@ -85,7 +86,7 @@ HgImporter::HgImporter(
     cmd.push_back(repoPath.stringWithoutUNC());
   } else {
     cmd.push_back(FLAGS_hgPath);
-    cmd.push_back("debugedenimporthelper");
+    cmd.emplace_back("debugedenimporthelper");
   }
 
   SpawnedProcess::Options opts;
@@ -95,14 +96,14 @@ HgImporter::HgImporter(
   // Send commands to the child on this pipe
   Pipe childInPipe;
   auto inFd = opts.inheritDescriptor(std::move(childInPipe.read));
-  cmd.push_back("--in-fd");
+  cmd.emplace_back("--in-fd");
   cmd.push_back(folly::to<string>(inFd));
   helperIn_ = std::move(childInPipe.write);
 
   // Read responses from this pipe
   Pipe childOutPipe;
   auto outFd = opts.inheritDescriptor(std::move(childOutPipe.write));
-  cmd.push_back("--out-fd");
+  cmd.emplace_back("--out-fd");
   cmd.push_back(folly::to<string>(outFd));
   helperOut_ = std::move(childOutPipe.read);
 
@@ -374,26 +375,6 @@ std::unique_ptr<IOBuf> HgImporter::fetchTree(
   return buf;
 }
 
-Hash20 HgImporter::resolveManifestNode(folly::StringPiece revName) {
-  auto requestID = sendManifestNodeRequest(revName);
-
-  auto header = readChunkHeader(requestID, "CMD_MANIFEST_NODE_FOR_COMMIT");
-  if (header.dataLength != 20) {
-    throw std::runtime_error(folly::to<string>(
-        "expected a 20-byte hash for the manifest node '",
-        revName,
-        "' but got data of length ",
-        header.dataLength));
-  }
-
-  Hash20::Storage buffer;
-  readFromHelper(
-      buffer.data(),
-      folly::to_narrow(buffer.size()),
-      "CMD_MANIFEST_NODE_FOR_COMMIT response body");
-  return Hash20(buffer);
-}
-
 HgImporter::ChunkHeader HgImporter::readChunkHeader(
     TransactionID txnID,
     StringPiece cmdName) {
@@ -441,48 +422,6 @@ HgImporter::ChunkHeader HgImporter::readChunkHeader(
   XLOG(WARNING) << "error received from hg helper process: " << errorType
                 << ": " << message;
   throw HgImportPyError(errorType, message);
-}
-
-HgImporter::TransactionID HgImporter::sendManifestRequest(
-    folly::StringPiece revName) {
-  stats_->increment(&HgImporterStats::manifest);
-
-  auto txnID = nextRequestID_++;
-  ChunkHeader header;
-  header.command = Endian::big<uint32_t>(CMD_MANIFEST);
-  header.requestID = Endian::big<uint32_t>(txnID);
-  header.flags = 0;
-  header.dataLength = Endian::big<uint32_t>(folly::to_narrow(revName.size()));
-
-  std::array<struct iovec, 2> iov;
-  iov[0].iov_base = &header;
-  iov[0].iov_len = sizeof(header);
-  iov[1].iov_base = const_cast<char*>(revName.data());
-  iov[1].iov_len = revName.size();
-  writeToHelper(iov, "CMD_MANIFEST");
-
-  return txnID;
-}
-
-HgImporter::TransactionID HgImporter::sendManifestNodeRequest(
-    folly::StringPiece revName) {
-  stats_->increment(&HgImporterStats::manifestNodeForCommit);
-
-  auto txnID = nextRequestID_++;
-  ChunkHeader header;
-  header.command = Endian::big<uint32_t>(CMD_MANIFEST_NODE_FOR_COMMIT);
-  header.requestID = Endian::big<uint32_t>(txnID);
-  header.flags = 0;
-  header.dataLength = Endian::big<uint32_t>(folly::to_narrow(revName.size()));
-
-  std::array<struct iovec, 2> iov;
-  iov[0].iov_base = &header;
-  iov[0].iov_len = sizeof(header);
-  iov[1].iov_base = const_cast<char*>(revName.data());
-  iov[1].iov_len = revName.size();
-  writeToHelper(iov, "CMD_MANIFEST_NODE_FOR_COMMIT");
-
-  return txnID;
 }
 
 HgImporter::TransactionID HgImporter::sendFileRequest(
@@ -590,13 +529,16 @@ const ImporterOptions& HgImporter::getOptions() const {
 HgImporterManager::HgImporterManager(
     AbsolutePathPiece repoPath,
     EdenStatsPtr stats,
+    std::shared_ptr<StructuredLogger> logger,
     std::optional<AbsolutePath> importHelperScript)
     : repoPath_{repoPath},
+      repoName_(HgImporter(repoPath, stats.copy()).getOptions().repoName),
       stats_{std::move(stats)},
+      logger_{std::move(logger)},
       importHelperScript_{importHelperScript} {}
 
 template <typename Fn>
-auto HgImporterManager::retryOnError(Fn&& fn) {
+auto HgImporterManager::retryOnError(Fn&& fn, FetchMiss::MissType missType) {
   bool retried = false;
 
   auto retryableError = [this, &retried](const std::exception& ex) {
@@ -609,43 +551,51 @@ auto HgImporterManager::retryOnError(Fn&& fn) {
     }
   };
 
-  while (true) {
-    try {
-      return fn(getImporter());
-    } catch (const HgImportPyError& ex) {
-      if (ex.errorType() == "ResetRepoError") {
-        // The python code thinks its repository state has gone bad, and
-        // is requesting to be restarted
+  try {
+    while (true) {
+      try {
+        return fn(getImporter());
+      } catch (const HgImportPyError& ex) {
+        if (ex.errorType() == "ResetRepoError") {
+          // The python code thinks its repository state has gone bad, and
+          // is requesting to be restarted
+          retryableError(ex);
+        } else {
+          throw;
+        }
+      } catch (const HgImporterError& ex) {
         retryableError(ex);
-      } else {
-        throw;
       }
-    } catch (const HgImporterError& ex) {
-      retryableError(ex);
     }
+  } catch (const std::exception& ex) {
+    logger_->logEvent(FetchMiss{
+        repoPath_.asString(),
+        FetchMiss::HgImporter,
+        missType,
+        folly::to<string>(ex.what()),
+        true});
+    throw;
   }
-}
-
-Hash20 HgImporterManager::resolveManifestNode(StringPiece revName) {
-  return retryOnError([&](HgImporter* importer) {
-    return importer->resolveManifestNode(revName);
-  });
 }
 
 BlobPtr HgImporterManager::importFileContents(
     RelativePathPiece path,
     Hash20 blobHash) {
-  return retryOnError([=](HgImporter* importer) {
-    return importer->importFileContents(path, blobHash);
-  });
+  return retryOnError(
+      [=](HgImporter* importer) {
+        return importer->importFileContents(path, blobHash);
+      },
+      FetchMiss::Blob);
 }
 
 std::unique_ptr<IOBuf> HgImporterManager::fetchTree(
     RelativePathPiece path,
     Hash20 pathManifestNode) {
-  return retryOnError([&](HgImporter* importer) {
-    return importer->fetchTree(path, pathManifestNode);
-  });
+  return retryOnError(
+      [&](HgImporter* importer) {
+        return importer->fetchTree(path, pathManifestNode);
+      },
+      FetchMiss::Tree);
 }
 
 HgImporter* HgImporterManager::getImporter() {

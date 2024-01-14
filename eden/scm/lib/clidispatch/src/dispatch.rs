@@ -7,7 +7,6 @@
 
 use std::env;
 use std::path::Path;
-use std::sync::atomic::Ordering::SeqCst;
 
 use anyhow::Error;
 use cliparser::alias::expand_aliases;
@@ -21,11 +20,13 @@ use configmodel::Config;
 use configmodel::ConfigExt;
 use repo::repo::Repo;
 
+use crate::abort_if;
 use crate::command::CommandDefinition;
 use crate::command::CommandFunc;
 use crate::command::CommandTable;
 use crate::errors;
 use crate::errors::UnknownCommand;
+use crate::fallback;
 use crate::global_flags::HgGlobalOpts;
 use crate::io::IO;
 use crate::OptionalRepo;
@@ -90,14 +91,49 @@ fn add_global_flag_derived_configs(repo: &mut OptionalRepo, global_opts: HgGloba
     }
 }
 
-fn last_chance_to_abort(opts: &HgGlobalOpts) -> Result<()> {
-    if opts.profile {
-        return Err(errors::Abort("--profile does not support Rust commands (yet)".into()).into());
+fn last_chance_to_abort(early: &HgGlobalOpts, full: &HgGlobalOpts) -> Result<()> {
+    abort_if!(
+        full.profile,
+        "--profile does not support Rust commands (yet)"
+    );
+
+    if full.help {
+        fallback!("--help option requested");
     }
 
-    if opts.help {
-        return Err(errors::FallbackToPython("--help option requested".to_owned()).into());
-    }
+    // These are security sensitive options, so perform extra checks.
+    //
+    // "early" was parsed disallowing arbitrary prefix matching (e.g.
+    // "--configfi" won't expand to "--configfile"), so simply comparing the
+    // early and full args can detect abbreviations.
+    //
+    // These comparisons also check for the sensitive options being included in
+    // command aliases since aliases have not been expanded for the "early"
+    // parse.
+    abort_if!(
+        early.config != full.config,
+        "option --config may not be abbreviated or used in aliases",
+    );
+
+    abort_if!(
+        early.configfile != full.configfile,
+        "option --configfile may not be abbreviated or used in aliases",
+    );
+
+    abort_if!(
+        early.cwd != full.cwd,
+        "option --cwd may not be abbreviated or used in aliases",
+    );
+
+    abort_if!(
+        early.repository != full.repository,
+        "option -R must appear alone, and --repository may not be abbreviated or used in aliases",
+    );
+
+    abort_if!(
+        early.debugger != full.debugger,
+        "option --debugger may not be abbreviated or used in aliases",
+    );
 
     Ok(())
 }
@@ -146,31 +182,7 @@ fn initialize_blackbox(optional_repo: &OptionalRepo) -> Result<()> {
 }
 
 fn initialize_indexedlog(config: &ConfigSet) -> Result<()> {
-    if cfg!(unix) {
-        let chmod_file = config.get_or("permissions", "chmod-file", || -1)?;
-        if chmod_file >= 0 {
-            indexedlog::config::CHMOD_FILE.store(chmod_file, SeqCst);
-        }
-
-        let chmod_dir = config.get_or("permissions", "chmod-dir", || -1)?;
-        if chmod_dir >= 0 {
-            indexedlog::config::CHMOD_DIR.store(chmod_dir, SeqCst);
-        }
-
-        let use_symlink_atomic_write: bool =
-            config.get_or_default("format", "use-symlink-atomic-write")?;
-        indexedlog::config::SYMLINK_ATOMIC_WRITE.store(use_symlink_atomic_write, SeqCst);
-    }
-
-    if let Some(max_chain_len) =
-        config.get_opt::<u32>("storage", "indexedlog-max-index-checksum-chain-len")?
-    {
-        indexedlog::config::INDEX_CHECKSUM_MAX_CHAIN_LEN.store(max_chain_len, SeqCst);
-    }
-
-    let fsync: bool = config.get_or_default("storage", "indexedlog-fsync")?;
-    indexedlog::config::set_global_fsync(fsync);
-
+    indexedlog::config::configure(config)?;
     Ok(())
 }
 
@@ -194,13 +206,19 @@ impl Dispatcher {
     /// Load configs. Prepare to run a command.
     pub fn from_args(mut args: Vec<String>) -> Result<Self> {
         if args.get(1).map(|s| s.as_ref()) == Some("--version") {
-            args = version_args(&args[0]);
+            args[1] = "version".to_string();
         }
 
         let mut early_result = early_parse(&args[1..])?;
         let global_opts: HgGlobalOpts = early_result.clone().try_into()?;
         if global_opts.version {
             args = version_args(&args[0]);
+            if global_opts.quiet {
+                args.push("--quiet".to_string());
+            }
+            if global_opts.verbose {
+                args.push("--verbose".to_string());
+            }
             early_result = early_parse(&args[1..])?;
         }
 
@@ -212,7 +230,7 @@ impl Dispatcher {
         let cwd = util::path::absolute(cwd)?;
 
         // Load repo and configuration.
-        match OptionalRepo::from_global_opts(&global_opts, &cwd) {
+        match OptionalRepo::from_global_opts(&global_opts, cwd) {
             Ok(optional_repo) => Ok(Self {
                 args,
                 early_result,
@@ -296,12 +314,12 @@ impl Dispatcher {
             env::set_current_dir(&self.global_opts.cwd)?;
         }
 
-        initialize_indexedlog(&config)?;
+        initialize_indexedlog(config)?;
 
         // Prepare alias handling.
         let alias_lookup = |name: &str| {
             // [alias] can have "<name>:doc" entries that are not commands. Skip them.
-            if name.contains(":") {
+            if name.contains(':') {
                 return None;
             }
 
@@ -363,11 +381,11 @@ impl Dispatcher {
         // - expanded => ["status", "-Tjson", "--verbose", "--verbose", "--traceback"]
         // - new_args => ["status", "-Tjson", "--verbose", "--verbose", "--traceback"]
 
-        let command_name = first_arg.to_string();
+        let command_name = first_arg;
         let (expanded, _first_arg_index) = expand_aliases(alias_lookup, &args[first_arg_index..])?;
         let (command_name, command_arg_len) =
             find_command_name(|name| command_table.get(name).is_some(), &expanded)
-                .ok_or_else(|| errors::UnknownCommand(command_name))?;
+                .ok_or(errors::UnknownCommand(command_name))?;
         tracing::info!(
             name = "log:command-row",
             command = AsRef::<str>::as_ref(&command_name)
@@ -382,7 +400,7 @@ impl Dispatcher {
         let parsed = parse(def, &new_args)?;
 
         let global_opts: HgGlobalOpts = parsed.clone().try_into()?;
-        last_chance_to_abort(&global_opts)?;
+        last_chance_to_abort(&self.global_opts, &global_opts)?;
 
         initialize_blackbox(&self.optional_repo)?;
 
@@ -404,6 +422,14 @@ impl Dispatcher {
             Err(e) => return (None, Err(e)),
         };
 
+        sampling::append_sample("command_info", "positional_args", parsed.args());
+
+        let opt_names = parsed.specified_opts();
+        sampling::append_sample("command_info", "option_names", opt_names);
+
+        let opt_values: Vec<_> = opt_names.iter().map(|n| parsed.opts().get(n)).collect();
+        sampling::append_sample("command_info", "option_values", &opt_values);
+
         let res = || -> Result<u8> {
             add_global_flag_derived_configs(&mut self.optional_repo, parsed.clone().try_into()?);
             tracing::debug!("command handled by a Rust function");
@@ -416,16 +442,7 @@ impl Dispatcher {
                 }
                 CommandFunc::WorkingCopy(f) => {
                     let repo = self.repo_mut()?;
-                    if !repo.config().get_or_default("workingcopy", "use-rust")? {
-                        tracing::warn!(
-                            "command requires working copy but Rust working copy is disabled"
-                        );
-                        // TODO(T131699257): Migrate all tests to use Rust
-                        // workingcopy and removed fallback to Python.
-                        return Err(errors::FallbackToPython("requested command that uses working copy but workingcopy.use-rust not set to True".to_owned()).into());
-                    }
-                    let path = repo.path().to_owned();
-                    let mut wc = repo.working_copy(&path)?;
+                    let mut wc = repo.working_copy()?;
                     f(parsed, io, repo, &mut wc)
                 }
             }

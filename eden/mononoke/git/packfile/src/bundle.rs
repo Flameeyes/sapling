@@ -8,14 +8,14 @@
 use std::fmt::Display;
 
 use anyhow::Result;
-use bytes::Bytes;
-use futures::Future;
 use futures::Stream;
 use gix_hash::ObjectId;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
+use crate::pack::DeltaForm;
 use crate::pack::PackfileWriter;
+use crate::types::PackfileItem;
 
 /// The message/comment associated with the pre-requisite objects
 const BUNDLE_PREREQ_MSG: &str = "bundled object";
@@ -60,6 +60,8 @@ impl<T: AsyncWrite + Unpin> BundleWriter<T> {
         refs: Vec<(String, ObjectId)>,
         prereqs: Option<Vec<ObjectId>>,
         num_objects: u32,
+        concurrency: usize,
+        delta_form: DeltaForm,
     ) -> Result<Self> {
         // Append the bundle header
         writer
@@ -81,7 +83,7 @@ impl<T: AsyncWrite + Unpin> BundleWriter<T> {
         }
         // Newline before starting packfile
         writer.write_all(b"\n").await?;
-        let pack_writer = PackfileWriter::new(writer, num_objects);
+        let pack_writer = PackfileWriter::new(writer, num_objects, concurrency, delta_form);
         Ok(Self {
             version: BundleVersion::V2,
             refs,
@@ -93,7 +95,7 @@ impl<T: AsyncWrite + Unpin> BundleWriter<T> {
     /// Write the stream of input items to the bundle
     pub async fn write(
         &mut self,
-        objects_stream: impl Stream<Item = impl Future<Output = Result<Bytes>>>,
+        objects_stream: impl Stream<Item = Result<PackfileItem>>,
     ) -> Result<()> {
         self.pack_writer.write(objects_stream).await
     }

@@ -1,7 +1,7 @@
-#debugruntest-compatible
+#chg-compatible
 #inprocess-hg-incompatible
 
-  $ setconfig workingcopy.ruststatus=false
+  $ setconfig commitcloud.enablestatus=false
 
 #testcases withpytz withoutpytz
 #if withpytz

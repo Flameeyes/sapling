@@ -15,15 +15,11 @@ import type {
 } from './github/pullRequestTimelineTypes';
 import type {GitObjectID} from './github/types';
 import type {NewCommentInputCallbacks} from './recoil';
-import type {HighlightedToken} from './textmate-lib/tokenize';
 import type {Hunk, ParsedDiff} from 'diff';
+import type {HighlightedToken} from 'shared/textmate-lib/tokenize';
 
+import {FileHeader} from './SplitDiffFileHeader';
 import SplitDiffRow from './SplitDiffRow';
-import {
-  applyTokenizationToLine,
-  createTokenizedIntralineDiff,
-  MAX_INPUT_LENGTH_FOR_INTRALINE_DIFF,
-} from './createTokenizedIntralineDiff';
 import {diffAndTokenize, lineRange} from './diffServiceClient';
 import {DiffSide} from './generated/graphql';
 import {grammars, languages} from './generated/textmate/TextMateGrammarManifest';
@@ -36,7 +32,6 @@ import {
   gitHubThreadsForDiffFile,
   nullAtom,
 } from './recoil';
-import FilepathClassifier from './textmate-lib/FilepathClassifier';
 import {primerColorMode} from './themeState';
 import {groupBy} from './utils';
 import {UnfoldIcon} from '@primer/octicons-react';
@@ -44,8 +39,13 @@ import {Box, Spinner, Text} from '@primer/react';
 import {diffChars} from 'diff';
 import React, {useCallback, useEffect, useState} from 'react';
 import {useRecoilValue, useRecoilValueLoadable, waitForAll} from 'recoil';
-import {FileHeader} from 'shared/SplitDiffView/SplitDiffFileHeader';
 import organizeLinesIntoGroups from 'shared/SplitDiffView/organizeLinesIntoGroups';
+import {
+  applyTokenizationToLine,
+  createTokenizedIntralineDiff,
+  MAX_INPUT_LENGTH_FOR_INTRALINE_DIFF,
+} from 'shared/createTokenizedIntralineDiff';
+import FilepathClassifier from 'shared/textmate-lib/FilepathClassifier';
 import {unwrap} from 'shared/utils';
 
 /**

@@ -1,5 +1,4 @@
 #chg-compatible
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
 
   $ CACHEDIR=`pwd`/hgcache
@@ -11,7 +10,7 @@ Create server
   $ cd master
   $ cat >> .hg/hgrc <<EOF
   > [extensions]
-  > treemanifest=$TESTDIR/../edenscm/ext/treemanifestserver.py
+  > treemanifest=$TESTDIR/../sapling/ext/treemanifestserver.py
   > [treemanifest]
   > server=True
   > [remotefilelog]

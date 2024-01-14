@@ -8,6 +8,7 @@
 #pragma once
 
 #include <folly/portability/SysTypes.h>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -182,6 +183,7 @@ struct FinishedMount {
   double duration = 0.0;
   bool success = false;
   bool clean = false;
+  int64_t inode_catalog_type = -1;
 
   void populate(DynamicEvent& event) const {
     event.addString("repo_type", repo_type);
@@ -191,6 +193,7 @@ struct FinishedMount {
     event.addDouble("duration", duration);
     event.addBool("success", success);
     event.addBool("clean", clean);
+    event.addInt("overlay_type", inode_catalog_type);
   }
 };
 
@@ -263,31 +266,6 @@ struct ServerDataFetch {
     }
     event.addString("fetched_path", fetched_path);
     event.addString("fetched_object_type", fetched_object_type);
-  }
-};
-
-struct EdenApiMiss {
-  enum MissType : bool {
-    Blob = 0,
-    Tree = 1,
-  };
-
-  static constexpr const char* type = "edenapi_miss";
-
-  std::string repo_name;
-  MissType miss_type;
-  std::string path;
-  std::string hash;
-
-  void populate(DynamicEvent& event) const {
-    event.addString("repo_source", repo_name);
-    if (miss_type == Blob) {
-      event.addString("edenapi_miss_type", "blob");
-    } else {
-      event.addString("edenapi_miss_type", "tree");
-    }
-    event.addString("path", path);
-    event.addString("hash", hash);
   }
 };
 
@@ -400,7 +378,7 @@ struct NfsCrawlDetected {
   int64_t readDirThreshold = 0;
   // root->leaf formatted as:
   //   "[simple_name (pid): full_name] -> [simple_name (pid): full_name] -> ..."
-  std::string processHierarchy = "";
+  std::string processHierarchy;
 
   void populate(DynamicEvent& event) const {
     event.addInt("read_count", readCount);
@@ -408,6 +386,37 @@ struct NfsCrawlDetected {
     event.addInt("readdir_count", readDirCount);
     event.addInt("readdir_threshold", readDirThreshold);
     event.addString("process_hierarchy", processHierarchy);
+  }
+};
+
+struct FetchMiss {
+  enum MissSource : uint8_t { BackingStore = 0, HgImporter = 1 };
+  enum MissType : uint8_t { Tree = 0, Blob = 1, BlobMetadata = 2 };
+
+  static constexpr const char* type = "fetch_miss";
+
+  std::string_view repo_source;
+  MissSource miss_source;
+  MissType miss_type;
+  std::string reason;
+  bool retry;
+
+  void populate(DynamicEvent& event) const {
+    event.addString("repo_source", std::string(repo_source));
+    if (miss_source == BackingStore) {
+      event.addString("miss_source", "backingstore");
+    } else {
+      event.addString("miss_source", "hgimporter");
+    }
+    if (miss_type == Tree) {
+      event.addString("miss_type", "tree");
+    } else if (miss_type == Blob) {
+      event.addString("miss_type", "blob");
+    } else {
+      event.addString("miss_type", "aux");
+    }
+    event.addString("reason", reason);
+    event.addBool("retry", retry);
   }
 };
 

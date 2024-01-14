@@ -1,13 +1,11 @@
 #debugruntest-compatible
 
-  $ setconfig workingcopy.ruststatus=False
   $ configure mutation-norecord
-  $ disable treemanifest
 
 Avoid "\r" in messages:
 
   $ cat > crlf.py << 'EOF'
-  > from edenscm import extensions, util
+  > from sapling import extensions, util
   > def uisetup(ui):
   >     extensions.wrapfunction(util, 'tonativeeol', lambda _orig, x: x)
   > EOF
@@ -107,7 +105,6 @@ Remove file that was added in amended commit:
   $ HGEDITOR='sh "`pwd`/editor.sh"' hg ci --amend --logfile ../logfile
 
   $ hg cat C
-  C: no such file in rev 9579b4a5c1df
   [1]
 
 No changes, just a different message:
@@ -298,7 +295,9 @@ Refuse to amend if there is a merge conflict (issue5805):
   U X
 
   $ hg ci --amend
-  abort: unresolved merge conflicts (see 'hg help resolve')
+  abort: unresolved merge state
+  (use 'hg resolve' to continue or
+       'hg goto --clean' to abort - WARNING: will destroy uncommitted changes)
   [255]
 
 Follow copies/renames (including issue4405):

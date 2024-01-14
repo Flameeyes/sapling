@@ -1,6 +1,5 @@
   $ eagerepo
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig status.use-rust=False workingcopy.use-rust=False
   $ cat >> fakepager.py <<EOF
   > import sys
   > printed = False
@@ -244,7 +243,7 @@ pager is globally set to off using a flag:
 Pager should not override the exit code of other commands
 
   $ cat >> $TESTTMP/fortytwo.py <<'EOF'
-  > from edenscm import commands, registrar
+  > from sapling import commands, registrar
   > cmdtable = {}
   > command = registrar.command(cmdtable)
   > @command('fortytwo', [], 'fortytwo', norepo=True)
@@ -338,10 +337,9 @@ During pushbuffer, pager should not start:
   >     ui.write(ui.popbuffer())
   > EOF
 
-  $ echo append >> a
-  $ hg --config extensions.pushbuffer=$TESTTMP/pushbufferpager.py status --color=off
+  $ hg --config extensions.pushbuffer=$TESTTMP/pushbufferpager.py cat a -r 'desc(add)'
   content
-  paged! 'M a\n'
+  paged! 'a\n'
 
 Environment variables like LESS and LV are set automatically:
   $ cat > $TESTTMP/printlesslv.py <<EOF

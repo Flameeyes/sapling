@@ -5,31 +5,31 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::SystemTime;
 
 use anyhow::anyhow;
 use anyhow::Result;
 use configmodel::Config;
 use configmodel::ConfigExt;
-use io::IO;
 use manifest_tree::ReadTreeManifest;
+use manifest_tree::TreeManifest;
 use parking_lot::Mutex;
 use pathmatcher::AlwaysMatcher;
 use pathmatcher::DynMatcher;
 use pathmatcher::Matcher;
-use pathmatcher::NeverMatcher;
 use progress_model::ProgressBar;
 use repolock::RepoLocker;
 use serde::Deserialize;
 use serde::Serialize;
+use termlogger::TermLogger;
 use treestate::filestate::StateFlags;
 use treestate::treestate::TreeState;
 use types::path::ParseError;
+use types::RepoPath;
 use types::RepoPathBuf;
 use vfs::VFS;
 use watchman_client::prelude::*;
@@ -37,29 +37,26 @@ use watchman_client::prelude::*;
 use super::treestate::clear_needs_check;
 use super::treestate::mark_needs_check;
 use super::treestate::set_clock;
-use crate::filechangedetector::ArcReadFileContents;
+use crate::filechangedetector::ArcFileStore;
 use crate::filechangedetector::FileChangeDetector;
 use crate::filechangedetector::FileChangeDetectorTrait;
 use crate::filechangedetector::ResolvedFileChangeResult;
-use crate::filesystem::ChangeType;
-use crate::filesystem::PendingChangeResult;
-use crate::filesystem::PendingChanges;
+use crate::filesystem::FileSystem;
+use crate::filesystem::PendingChange;
 use crate::metadata;
 use crate::metadata::Metadata;
+use crate::physicalfs::PhysicalFileSystem;
+use crate::util::dirstate_write_time_override;
+use crate::util::maybe_flush_treestate;
 use crate::util::walk_treestate;
 use crate::watchmanfs::treestate::get_clock;
 use crate::watchmanfs::treestate::list_needs_check;
-use crate::watchmanfs::treestate::maybe_flush_treestate;
 use crate::workingcopy::WorkingCopy;
 
 type ArcReadTreeManifest = Arc<dyn ReadTreeManifest + Send + Sync>;
 
 pub struct WatchmanFileSystem {
-    vfs: VFS,
-    treestate: Arc<Mutex<TreeState>>,
-    tree_resolver: ArcReadTreeManifest,
-    store: ArcReadFileContents,
-    locker: Arc<RepoLocker>,
+    inner: PhysicalFileSystem,
 }
 
 struct WatchmanConfig {
@@ -98,17 +95,13 @@ pub struct DebugRootStatusRequest(pub &'static str, pub PathBuf);
 impl WatchmanFileSystem {
     pub fn new(
         vfs: VFS,
-        treestate: Arc<Mutex<TreeState>>,
         tree_resolver: ArcReadTreeManifest,
-        store: ArcReadFileContents,
+        store: ArcFileStore,
+        treestate: Arc<Mutex<TreeState>>,
         locker: Arc<RepoLocker>,
     ) -> Result<Self> {
         Ok(WatchmanFileSystem {
-            vfs,
-            treestate,
-            tree_resolver,
-            store,
-            locker,
+            inner: PhysicalFileSystem::new(vfs, tree_resolver, store, treestate, locker)?,
         })
     }
 
@@ -125,33 +118,37 @@ impl WatchmanFileSystem {
         // This blocks until the recrawl (if required) is done. Progress is
         // shown by the crawl_progress task.
         let resolved = client
-            .resolve_root(CanonicalPath::canonicalize(self.vfs.root())?)
+            .resolve_root(CanonicalPath::canonicalize(self.inner.vfs.root())?)
             .await?;
 
-        let mut expr = None;
-        if !ignore_dirs.is_empty() {
-            expr = Some(Expr::Not(Box::new(Expr::Any(
-                ignore_dirs
-                    .into_iter()
-                    .map(|p| {
-                        Expr::DirName(DirNameTerm {
-                            path: p,
-                            depth: None,
-                        })
-                    })
-                    .collect(),
-            ))));
-        }
+        let mut not_exprs = vec![
+            // This files under nested ".hg" directories. Note that we don't have a good
+            // way to ignore regular files in the nested repo (e.g. we can ignore
+            // "dir/.hg/file", but not "dir/file".
+            Expr::Match(MatchTerm {
+                glob: format!("**/{}/**", self.inner.dot_dir),
+                wholename: true,
+                include_dot_files: true,
+                ..Default::default()
+            }),
+        ];
+
+        not_exprs.extend(ignore_dirs.into_iter().map(|p| {
+            Expr::DirName(DirNameTerm {
+                path: p,
+                depth: None,
+            })
+        }));
 
         // The crawl is done - display a generic "we're querying" spinner.
-        let _bar = ProgressBar::register_new("querying watchman", 0, "");
+        let _bar = ProgressBar::new_adhoc("querying watchman", 0, "");
 
         let result = client
             .query::<StatusQuery>(
                 &resolved,
                 QueryRequestCommon {
                     since: config.clock,
-                    expression: expr,
+                    expression: Some(Expr::Not(Box::new(Expr::Any(not_exprs)))),
                     sync_timeout: config.sync_timeout.into(),
                     ..Default::default()
                 },
@@ -162,63 +159,18 @@ impl WatchmanFileSystem {
 
         Ok(result)
     }
-}
 
-async fn crawl_progress(root: PathBuf, approx_file_count: u64) -> Result<()> {
-    let client = {
-        let _bar = ProgressBar::register_new("connecting watchman", 0, "");
-
-        // If watchman just started (and we issued "watch-project" from
-        // query_files), this connect gets stuck indefinitely. Work around by
-        // timing out and retrying until we get through.
-        loop {
-            match tokio::time::timeout(Duration::from_secs(1), Connector::new().connect()).await {
-                Ok(client) => break client?,
-                Err(_) => {}
-            };
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    };
-
-    let mut bar = None;
-
-    let req = DebugRootStatusRequest(
-        "debug-root-status",
-        CanonicalPath::canonicalize(root)?.into_path_buf(),
-    );
-
-    loop {
-        let response: DebugRootStatusResponse = client.generic_request(req.clone()).await?;
-
-        if let Some(RootStatus {
-            recrawl_info: Some(RecrawlInfo { stats: Some(stats) }),
-        }) = response.root_status
-        {
-            bar.get_or_insert_with(|| {
-                ProgressBar::register_new("crawling", approx_file_count, "files (approx)")
-            })
-            .set_position(stats);
-        } else if bar.is_some() {
-            return Ok(());
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-impl PendingChanges for WatchmanFileSystem {
     #[tracing::instrument(skip_all)]
     fn pending_changes(
         &self,
         matcher: DynMatcher,
-        mut ignore_matcher: DynMatcher,
+        ignore_matcher: DynMatcher,
         ignore_dirs: Vec<PathBuf>,
-        last_write: SystemTime,
+        include_ignored: bool,
         config: &dyn Config,
-        io: &IO,
-    ) -> Result<Box<dyn Iterator<Item = Result<PendingChangeResult>>>> {
-        let ts = &mut *self.treestate.lock();
+        lgr: &TermLogger,
+    ) -> Result<Box<dyn Iterator<Item = Result<PendingChange>>>> {
+        let ts = &mut *self.inner.treestate.lock();
 
         let treestate_started_dirty = ts.dirty();
 
@@ -243,12 +195,17 @@ impl PendingChanges for WatchmanFileSystem {
             ts.update_metadata(&[("track-ignored".to_string(), Some(md_value))])?;
         }
 
+        if include_ignored && !track_ignored {
+            // TODO: give user a hint about fsmonitor.track-ignore-files
+            prev_clock = None;
+        }
+
         if config.get_or_default("devel", "watchman-reset-clock")? {
             prev_clock = None;
         }
 
         let progress_handle = async_runtime::spawn(crawl_progress(
-            self.vfs.root().to_path_buf(),
+            self.inner.vfs.root().to_path_buf(),
             ts.len() as u64,
         ));
 
@@ -265,10 +222,13 @@ impl PendingChanges for WatchmanFileSystem {
                         })?,
                 },
                 ignore_dirs,
-            ))?
+            ))
         };
 
+        // Make sure we always abort - even in case of error.
         progress_handle.abort();
+
+        let result = result?;
 
         tracing::debug!(
             target: "watchman_info",
@@ -279,7 +239,7 @@ impl PendingChanges for WatchmanFileSystem {
         let should_warn = config.get_or_default("fsmonitor", "warn-fresh-instance")?;
         if result.is_fresh_instance && should_warn {
             let _ = warn_about_fresh_instance(
-                io,
+                lgr,
                 parse_watchman_pid(prev_clock.as_ref()),
                 parse_watchman_pid(Some(&result.clock)),
             );
@@ -293,7 +253,7 @@ impl PendingChanges for WatchmanFileSystem {
                 .as_ref()
                 .map_or(false, |f| f.len() > file_change_threshold);
 
-        let manifests = WorkingCopy::current_manifests(ts, &self.tree_resolver)?;
+        let manifests = WorkingCopy::current_manifests(ts, &self.inner.tree_resolver)?;
 
         let mut wm_errors: Vec<ParseError> = Vec::new();
         let use_watchman_metadata =
@@ -349,27 +309,22 @@ impl PendingChanges for WatchmanFileSystem {
             )
             .collect();
 
-        if track_ignored {
-            // If we want to track ignored files, say that nothing is ignored.
-            // Note that the "full" matcher will still skip ignored files.
-            ignore_matcher = Arc::new(NeverMatcher::new());
-        }
-
         let detector = FileChangeDetector::new(
-            self.vfs.clone(),
-            last_write.try_into()?,
+            self.inner.vfs.clone(),
             manifests[0].clone(),
-            self.store.clone(),
+            self.inner.store.clone(),
             config.get_opt("workingcopy", "worker-count")?,
         );
         let mut pending_changes = detect_changes(
             matcher,
             ignore_matcher,
+            track_ignored,
+            include_ignored,
             detector,
             ts,
             wm_needs_check,
             result.is_fresh_instance,
-            self.vfs.case_sensitive(),
+            self.inner.vfs.case_sensitive(),
         )?;
 
         // Add back path errors into the pending changes. The caller
@@ -391,35 +346,140 @@ impl PendingChanges for WatchmanFileSystem {
         if treestate_started_dirty {
             tracing::debug!("treestate was dirty - skipping flush");
         } else {
-            maybe_flush_treestate(config, self.vfs.root(), ts, &self.locker)?;
+            maybe_flush_treestate(
+                self.inner.vfs.root(),
+                ts,
+                &self.inner.locker,
+                dirstate_write_time_override(config),
+            )?;
         }
 
         Ok(Box::new(pending_changes.into_iter()))
     }
 }
 
-fn warn_about_fresh_instance(io: &IO, old_pid: Option<u32>, new_pid: Option<u32>) -> Result<()> {
-    let mut output = io.error();
+async fn crawl_progress(root: PathBuf, approx_file_count: u64) -> Result<()> {
+    let client = {
+        let _bar = ProgressBar::new_detached("connecting watchman", 0, "");
+
+        // If watchman just started (and we issued "watch-project" from
+        // query_files), this connect gets stuck indefinitely. Work around by
+        // timing out and retrying until we get through.
+        loop {
+            match tokio::time::timeout(Duration::from_secs(1), Connector::new().connect()).await {
+                Ok(client) => break client?,
+                Err(_) => {}
+            };
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    };
+
+    let mut bar = None;
+
+    let req = DebugRootStatusRequest(
+        "debug-root-status",
+        CanonicalPath::canonicalize(root)?.into_path_buf(),
+    );
+
+    loop {
+        let response: DebugRootStatusResponse = client.generic_request(req.clone()).await?;
+
+        if let Some(RootStatus {
+            recrawl_info: Some(RecrawlInfo { stats: Some(stats) }),
+        }) = response.root_status
+        {
+            bar.get_or_insert_with(|| {
+                ProgressBar::new_detached("crawling", approx_file_count, "files (approx)")
+            })
+            .set_position(stats);
+        } else if bar.is_some() {
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+impl FileSystem for WatchmanFileSystem {
+    fn pending_changes(
+        &self,
+        matcher: DynMatcher,
+        ignore_matcher: DynMatcher,
+        ignore_dirs: Vec<PathBuf>,
+        include_ignored: bool,
+        config: &dyn Config,
+        lgr: &TermLogger,
+    ) -> Result<Box<dyn Iterator<Item = Result<PendingChange>>>> {
+        let result = self.pending_changes(
+            matcher.clone(),
+            ignore_matcher.clone(),
+            ignore_dirs.clone(),
+            include_ignored,
+            config,
+            lgr,
+        );
+
+        match result {
+            Ok(result) => Ok(result),
+            Err(err) if err.is::<watchman_client::Error>() => {
+                if !config.get_or("fsmonitor", "fallback-on-watchman-exception", || true)? {
+                    return Err(err);
+                }
+
+                // On watchman error, fall back to manual walk. This is important for errors such as:
+                //   - "watchman" binary not in PATH
+                //   - unsupported filesystem (e.g. NFS)
+                //
+                // A better approach might be an allowlist of errors to fall
+                // back on so we can fail hard in cases where watchman "should"
+                // work, but that is probably still an unacceptable UX in general.
+
+                tracing::debug!(target: "watchman_info", watchmanfallback=1);
+                tracing::warn!(?err, "watchman error - falling back to slow crawl");
+                self.inner.pending_changes(
+                    matcher,
+                    ignore_matcher,
+                    ignore_dirs,
+                    include_ignored,
+                    config,
+                    lgr,
+                )
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn sparse_matcher(
+        &self,
+        manifests: &[Arc<TreeManifest>],
+        dot_dir: &'static str,
+    ) -> Result<Option<DynMatcher>> {
+        self.inner.sparse_matcher(manifests, dot_dir)
+    }
+}
+
+fn warn_about_fresh_instance(
+    lgr: &TermLogger,
+    old_pid: Option<u32>,
+    new_pid: Option<u32>,
+) -> Result<()> {
     match (old_pid, new_pid) {
         (Some(old_pid), Some(new_pid)) if old_pid != new_pid => {
-            writeln!(
-                &mut output,
+            lgr.warn(format!(
                 "warning: watchman has recently restarted (old pid {}, new pid {}) - operation will be slower than usual",
                 old_pid, new_pid
-            )?;
+            ));
         }
         (None, Some(new_pid)) => {
-            writeln!(
-                &mut output,
+            lgr.warn(format!(
                 "warning: watchman has recently started (pid {}) - operation will be slower than usual",
                 new_pid
-            )?;
+            ));
         }
         _ => {
-            writeln!(
-                &mut output,
-                "warning: watchman failed to catch up with file change events and requires a full scan - operation will be slower than usual"
-            )?;
+            lgr.warn(
+                "warning: watchman failed to catch up with file change events and requires a full scan - operation will be slower than usual");
         }
     }
 
@@ -434,6 +494,8 @@ fn warn_about_fresh_instance(io: &IO, old_pid: Option<u32>, new_pid: Option<u32>
 pub(crate) fn detect_changes(
     matcher: DynMatcher,
     ignore_matcher: DynMatcher,
+    track_ignored: bool,
+    include_ignored: bool,
     mut file_change_detector: impl FileChangeDetectorTrait + 'static,
     ts: &mut TreeState,
     wm_need_check: Vec<metadata::File>,
@@ -448,10 +510,12 @@ pub(crate) fn detect_changes(
     // necessarily contain all NEED_CHECK entries in the treestate.
     let ts_need_check: HashSet<_> = ts_need_check.into_iter().collect();
 
-    let mut pending_changes: Vec<Result<PendingChangeResult>> =
+    let mut pending_changes: Vec<Result<PendingChange>> =
         ts_errors.into_iter().map(|e| Err(anyhow!(e))).collect();
     let mut needs_clear: Vec<(RepoPathBuf, Option<Metadata>)> = Vec::new();
     let mut needs_mark = Vec::new();
+
+    let wm_need_check = normalize_watchman_files(ts, wm_need_check, fs_case_sensitive)?;
 
     tracing::debug!(
         watchman_needs_check = wm_need_check.len(),
@@ -461,13 +525,11 @@ pub(crate) fn detect_changes(
     let total_needs_check = ts_need_check.len()
         + wm_need_check
             .iter()
-            .filter(|p| !ts_need_check.contains(&p.path))
+            .filter(|(p, _)| !ts_need_check.contains(*p))
             .count();
 
     // This is to set "total" for progress bar.
     file_change_detector.total_work_hint(total_needs_check as u64);
-
-    let wm_seen: HashSet<RepoPathBuf> = wm_need_check.iter().map(|f| f.path.clone()).collect();
 
     drop(_span);
 
@@ -476,7 +538,15 @@ pub(crate) fn detect_changes(
     for ts_needs_check in ts_need_check.iter() {
         // Prefer to kick off file check using watchman data since that already
         // includes disk metadata.
-        if wm_seen.contains(ts_needs_check) {
+        if wm_need_check.contains_key(ts_needs_check) {
+            continue;
+        }
+
+        // This check is important when we are tracking ignored files.
+        // We won't do a fresh watchman query, so we must get the list
+        // of ignored files from the treestate.
+        if include_ignored && ignore_matcher.matches_file(ts_needs_check)? {
+            pending_changes.push(Ok(PendingChange::Ignored(ts_needs_check.clone())));
             continue;
         }
 
@@ -491,60 +561,11 @@ pub(crate) fn detect_changes(
 
     drop(_span);
 
-    let _span = tracing::info_span!("submit wm_need_check").entered();
-
-    for mut wm_needs_check in wm_need_check {
-        let state = ts.normalized_get(&wm_needs_check.path)?;
-
-        let is_tracked = match &state {
-            Some(state) => state
-                .state
-                .intersects(StateFlags::EXIST_P1 | StateFlags::EXIST_P2 | StateFlags::EXIST_NEXT),
-            None => false,
-        };
-        // Skip ignored files to reduce work. We short circuit with an
-        // "untracked" check to minimize use of the GitignoreMatcher.
-        if !is_tracked && ignore_matcher.matches_file(&wm_needs_check.path)? {
-            continue;
-        }
-
-        wm_needs_check.ts_state = state;
-
-        file_change_detector.submit(wm_needs_check);
-    }
-
-    drop(_span);
-
-    let _span = tracing::info_span!("handle results").entered();
-
     let mut deletes = Vec::new();
 
-    for result in file_change_detector {
-        match result {
-            Ok(ResolvedFileChangeResult::Yes(change)) => {
-                let path = change.get_path();
-                if let ChangeType::Deleted(path) = change {
-                    deletes.push(path);
-                } else {
-                    if !ts_need_check.contains(path) {
-                        needs_mark.push(path.clone());
-                    }
-                    pending_changes.push(Ok(PendingChangeResult::File(change)));
-                }
-            }
-            Ok(ResolvedFileChangeResult::No((path, fs_meta))) => {
-                if ts_need_check.contains(&path) {
-                    needs_clear.push((path, fs_meta));
-                }
-            }
-            Err(e) => pending_changes.push(Err(e)),
-        }
-    }
-
-    drop(_span);
-
     if wm_fresh_instance {
-        let _span = tracing::info_span!("fresh_instance work", wm_len = wm_seen.len()).entered();
+        let _span =
+            tracing::info_span!("fresh_instance work", wm_len = wm_need_check.len()).entered();
 
         // On fresh instance, watchman returns all files present on
         // disk. We need to catch the case where a tracked file has been
@@ -555,9 +576,10 @@ pub(crate) fn detect_changes(
             ts,
             Arc::new(AlwaysMatcher::new()),
             StateFlags::EXIST_NEXT,
+            StateFlags::empty(),
             StateFlags::NEED_CHECK,
             |path, _state| {
-                if !wm_seen.contains(&path) {
+                if !wm_need_check.contains_key(&path) {
                     deletes.push(path);
                 }
                 Ok(())
@@ -569,9 +591,10 @@ pub(crate) fn detect_changes(
             ts,
             Arc::new(AlwaysMatcher::new()),
             StateFlags::NEED_CHECK,
+            StateFlags::empty(),
             StateFlags::EXIST_NEXT | StateFlags::EXIST_P1 | StateFlags::EXIST_P2,
             |path, _state| {
-                if !wm_seen.contains(&path) {
+                if !wm_need_check.contains_key(&path) {
                     needs_clear.push((path, None));
                 }
                 Ok(())
@@ -579,42 +602,73 @@ pub(crate) fn detect_changes(
         )?;
     }
 
-    if !deletes.is_empty() {
-        let mut deletes: HashSet<_> = deletes.into_iter().collect();
+    let _span = tracing::info_span!("submit wm_need_check").entered();
 
-        if !fs_case_sensitive {
-            // On case insensitive (but case preservign) filesystems, watchman
-            // reports a case sensitive rename as a delete of the old name and
-            // update of the new name. We need to ignore the delete. We do that
-            // here by skipping deletes that insensitively match other paths
-            // watchman told us about.
-            let other_changes: HashSet<RepoPathBuf> = wm_seen
-                .iter()
-                .filter_map(|p| {
-                    if !deletes.contains(p) {
-                        Some(p.to_lower_case())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+    for (_, wm_needs_check) in wm_need_check {
+        // is_tracked is used to short circuit invocations of the ignore
+        // matcher, which can be expensive.
+        let is_tracked = match &wm_needs_check.ts_state {
+            Some(state) => state
+                .state
+                .intersects(StateFlags::EXIST_P1 | StateFlags::EXIST_P2 | StateFlags::EXIST_NEXT),
+            None => false,
+        };
 
-            deletes.retain(|d| {
-                if !other_changes.contains(&d.to_lower_case()) {
-                    true
-                } else {
-                    tracing::trace!(deleted=?d, "ignoring case insensitive delete");
-                    false
+        if !is_tracked {
+            if let Some(Some(fs_meta)) = &wm_needs_check.fs_meta {
+                if fs_meta.is_dir() {
+                    continue;
                 }
-            });
+            }
+
+            let ignored = ignore_matcher.matches_file(&wm_needs_check.path)?;
+            if include_ignored && ignored {
+                pending_changes.push(Ok(PendingChange::Ignored(wm_needs_check.path.clone())));
+            }
+            if !track_ignored && ignored {
+                continue;
+            }
         }
 
-        for d in deletes {
-            if !ts_need_check.contains(&d) {
-                needs_mark.push(d.clone());
+        file_change_detector.submit(wm_needs_check);
+    }
+
+    drop(_span);
+
+    let _span = tracing::info_span!("handle results").entered();
+
+    for result in file_change_detector {
+        match result {
+            Ok(ResolvedFileChangeResult::Yes(change)) => {
+                let path = change.get_path();
+                if let PendingChange::Deleted(path) = change {
+                    deletes.push(path);
+                } else {
+                    if !ts_need_check.contains(path) {
+                        needs_mark.push(path.clone());
+                    }
+                    pending_changes.push(Ok(change));
+                }
             }
-            pending_changes.push(Ok(PendingChangeResult::File(ChangeType::Deleted(d))));
+            Ok(ResolvedFileChangeResult::No((path, fs_meta))) => {
+                // File is clean. Update treestate entry if it was marked
+                // NEED_CHECK, or if we have fs_meta which implies treestate
+                // metadata (e.g. mtime, size, etc.) is out of date.
+                if ts_need_check.contains(&path) || fs_meta.is_some() {
+                    needs_clear.push((path, fs_meta));
+                }
+            }
+            Err(e) => pending_changes.push(Err(e)),
         }
+    }
+
+    drop(_span);
+
+    for d in deletes {
+        if !ts_need_check.contains(&d) {
+            needs_mark.push(d.clone());
+        }
+        pending_changes.push(Ok(PendingChange::Deleted(d)));
     }
 
     Ok(WatchmanPendingChanges {
@@ -624,8 +678,64 @@ pub(crate) fn detect_changes(
     })
 }
 
+fn normalize_watchman_files(
+    ts: &mut TreeState,
+    wm_files: Vec<metadata::File>,
+    fs_case_sensitive: bool,
+) -> Result<HashMap<RepoPathBuf, metadata::File>> {
+    let mut wm_need_check = HashMap::with_capacity(wm_files.len());
+
+    for mut file in wm_files {
+        let (normalized_path, state) = ts.normalize_path_and_get(file.path.as_ref())?;
+
+        let normalized_path = RepoPath::from_utf8(&normalized_path)?;
+
+        let path_differs = normalized_path != file.path.as_ref();
+
+        if path_differs
+            && state.as_ref().is_some_and(|state| {
+                state.state.intersects(StateFlags::EXIST_P1)
+                    && !state.state.intersects(StateFlags::EXIST_NEXT)
+            })
+        {
+            // Don't normalize into a pending "remove". This is the one case we
+            // allow case colliding paths on case insensitive filesystems.
+            tracing::trace!(
+                "not normalizing {:?} since {:?} is removed",
+                file.path,
+                normalized_path
+            );
+            wm_need_check.insert(file.path.clone(), file);
+            continue;
+        }
+
+        if !fs_case_sensitive {
+            if let Some(existing) = wm_need_check.get(normalized_path) {
+                if matches!(existing.fs_meta, Some(Some(_))) {
+                    // After a case sensitive file rename on a case insensitive
+                    // filesystem, watchman reports a delete and an add. We need
+                    // to fold those two events together, which we do here by
+                    // preserving the add.
+                    tracing::trace!(path = ?file.path, "dropping in favor of exists-on-disk");
+                    continue;
+                }
+            }
+        }
+
+        if path_differs {
+            file.path = normalized_path.to_owned();
+        }
+
+        file.ts_state = state;
+
+        wm_need_check.insert(file.path.clone(), file);
+    }
+
+    Ok(wm_need_check)
+}
+
 pub struct WatchmanPendingChanges {
-    pending_changes: Vec<Result<PendingChangeResult>>,
+    pending_changes: Vec<Result<PendingChange>>,
     needs_clear: Vec<(RepoPathBuf, Option<Metadata>)>,
     needs_mark: Vec<RepoPathBuf>,
 }
@@ -633,7 +743,7 @@ pub struct WatchmanPendingChanges {
 impl WatchmanPendingChanges {
     #[tracing::instrument(skip_all)]
     pub fn update_treestate(&mut self, ts: &mut TreeState) -> Result<bool> {
-        let bar = ProgressBar::register_new(
+        let bar = ProgressBar::new_adhoc(
             "recording files",
             (self.needs_clear.len() + self.needs_mark.len()) as u64,
             "entries",
@@ -665,7 +775,7 @@ impl WatchmanPendingChanges {
 }
 
 impl IntoIterator for WatchmanPendingChanges {
-    type Item = Result<PendingChangeResult>;
+    type Item = Result<PendingChange>;
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {

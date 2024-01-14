@@ -2,14 +2,13 @@
 #debugruntest-compatible
 #inprocess-hg-incompatible
 
-  $ setconfig workingcopy.ruststatus=false
 
 Tests for the journal extension; records bookmark locations.
 
   $ newext testmocks <<EOF
   > # mock out util.getuser() and util.makedate() to supply testable values
   > import os
-  > from edenscm import util
+  > from sapling import util
   > def mockgetuser():
   >     return 'foobar'
   > 

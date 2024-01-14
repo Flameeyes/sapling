@@ -1,11 +1,8 @@
 #debugruntest-compatible
+#require symlink
+
   $ eagerepo
   $ setconfig experimental.allowfilepeer=True
-  $ setconfig experimental.windows-symlinks=True
-
-#if no-windows
-#require symlink
-#endif
 
 == tests added in 0.7 ==
 
@@ -72,7 +69,7 @@ it should show a.c, dir/a.o and dir/b.o deleted
   ! dir/a.o
   ? .gitignore
   $ hg status a.c
-  a.c: unsupported file type (type is fifo)
+  a.c: invalid file type
   ! a.c
   $ cd ..
 
@@ -155,9 +152,8 @@ try cloning symlink in a subdir
 
 == symlink and git diffs ==
 
-git symlink diff
+test diff --git with symlinks
 
-#if no-windows
   $ cd clonedest
   $ hg diff --git -r null:tip
   diff --git a/a/b/c/demo b/a/b/c/demo
@@ -169,7 +165,7 @@ git symlink diff
   \ No newline at end of file
   $ hg export --git tip > ../sl.diff
 
-import git symlink diff
+import git-style symlink diff
 
   $ hg rm a/b/c/demo
   $ hg commit -m'remove link'
@@ -201,8 +197,10 @@ This avoids same-second race condition that leaves files as NEED_CHECK.
 Make sure files are _not_ NEED_CHECK and have metadata. This is the tricky
 case for "status" to detect the new symlink.
   $ hg debugtree list
-  a/b/c/demo: 01207* 23 + EXIST_P1 EXIST_NEXT  (glob)
-  foo/a: 0100644 0 + EXIST_P1 EXIST_NEXT 
+  a/b/c/demo: 01207* 23 + EXIST_P1 EXIST_NEXT  (glob) (no-windows !)
+  a/b/c/demo: 0120666 0 + EXIST_P1 EXIST_NEXT  (windows !)
+  foo/a: 0100644 0 + EXIST_P1 EXIST_NEXT  (no-windows !)
+  foo/a: 0100666 0 + EXIST_P1 EXIST_NEXT  (windows !)
 #endif
 
   $ mv foo bar
@@ -316,7 +314,6 @@ Issue995: hg copy -A incorrectly handles symbolic links
   $ hg mv -A dirlink newdir/dirlink
 
   $ cd ..
-#endif
 
 Don't treat symlinks as untrackable if symlinks aren't supported.
   $ newclientrepo

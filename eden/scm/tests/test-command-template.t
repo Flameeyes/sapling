@@ -3,7 +3,6 @@
   $ setconfig format.use-segmented-changelog=true
   $ setconfig devel.segmented-changelog-rev-compat=true
   $ setconfig 'ui.allowemptycommit=1'
-  $ setconfig workingcopy.ruststatus=false
 
   $ hg init a
   $ cd a
@@ -209,7 +208,7 @@
 # experimental:
 
   $ hg log -r 'wdir()' -T '{rev}:{node}\n'
-  2147483647:ffffffffffffffffffffffffffffffffffffffff
+  9151595917793558527:ffffffffffffffffffffffffffffffffffffffff
 
 # Some keywords are invalid for working-directory revision, but they should
 # never cause crash:
@@ -3676,8 +3675,12 @@
     default
    remotebookmarks color=remotebookmark builtin=True
     
+   hoistednames color=hoistedname builtin=True
+    
    revnames color=revname builtin=False
     r2
+   titles color=titles builtin=True
+    
   
   1
    bookmarks color=bookmark builtin=True
@@ -3686,8 +3689,12 @@
     default
    remotebookmarks color=remotebookmark builtin=True
     
+   hoistednames color=hoistedname builtin=True
+    
    revnames color=revname builtin=False
     r1
+   titles color=titles builtin=True
+    
   
   0
    bookmarks color=bookmark builtin=True
@@ -3696,18 +3703,24 @@
     default
    remotebookmarks color=remotebookmark builtin=True
     
+   hoistednames color=hoistedname builtin=True
+    
    revnames color=revname builtin=False
     r0
+   titles color=titles builtin=True
+    
 
 # revert side effect of loading the revnames extension
 
-    from edenscm import namespaces
+    from sapling import namespaces
     del namespaces.namespacetable["revnames"]
 
   $ hg log -r2 -T '{namespaces % "{namespace}: {names}\n"}'
   bookmarks: bar foo text.{rev}
   branches: default
   remotebookmarks: 
+  hoistednames: 
+  titles: 
   $ hg log -r2 -T '{namespaces % "{namespace}:\n{names % " {name}\n"}"}'
   bookmarks:
    bar
@@ -3716,6 +3729,8 @@
   branches:
    default
   remotebookmarks:
+  hoistednames:
+  titles:
   $ hg log -r2 -T '{get(namespaces, "bookmarks") % "{name}\n"}'
   bar
   foo
@@ -4068,7 +4083,7 @@
   $ cd a
 
   $ cat > $TESTTMP/customfunc.py << 'EOF'
-  > from edenscm import registrar
+  > from sapling import registrar
   > templatefunc = registrar.templatefunc()
   > @templatefunc('custom()')
   > def custom(context, mapping, args):

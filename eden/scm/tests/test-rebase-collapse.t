@@ -1,5 +1,4 @@
 #debugruntest-compatible
-  $ setconfig workingcopy.ruststatus=False status.use-rust=false
   $ setconfig experimental.allowfilepeer=True
 
   $ configure mutation
@@ -495,7 +494,6 @@ running into merge conflict and invoking rebase --continue.
   user:        test
   date:        Thu Jan 01 00:00:00 1970 +0000
   summary:     a
-  
   $ cd ..
 
 Collapsed commits have internal conflict:

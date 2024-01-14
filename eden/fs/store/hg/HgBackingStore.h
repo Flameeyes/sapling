@@ -32,6 +32,7 @@ class UnboundedQueueExecutor;
 class ReloadableConfig;
 class HgProxyHash;
 class StructuredLogger;
+class FaultInjector;
 
 using EdenStatsPtr = RefPtr<EdenStats>;
 
@@ -50,7 +51,8 @@ class HgBackingStore {
       UnboundedQueueExecutor* serverThreadPool,
       std::shared_ptr<ReloadableConfig> config,
       EdenStatsPtr edenStats,
-      std::shared_ptr<StructuredLogger> logger);
+      std::shared_ptr<StructuredLogger> logger,
+      FaultInjector* FOLLY_NONNULL faultInjector);
 
   /**
    * Create an HgBackingStore suitable for use in unit tests. It uses an inline
@@ -62,11 +64,14 @@ class HgBackingStore {
       HgImporter* importer,
       std::shared_ptr<ReloadableConfig> config,
       std::shared_ptr<LocalStore> localStore,
-      EdenStatsPtr);
+      EdenStatsPtr,
+      FaultInjector* FOLLY_NONNULL faultInjector);
 
   ~HgBackingStore();
 
-  ImmediateFuture<TreePtr> getRootTree(const RootId& rootId);
+  ImmediateFuture<BackingStore::GetRootTreeResult> getRootTree(
+      const RootId& rootId,
+      const ObjectFetchContextPtr& context);
   folly::SemiFuture<TreePtr> getTree(
       const std::shared_ptr<HgImportRequest>& request);
 
@@ -77,15 +82,18 @@ class HgBackingStore {
    * treemanifest data.  This is called when the root manifest is provided
    * to EdenFS directly by the hg client.
    */
-  folly::Future<folly::Unit> importTreeManifestForRoot(
+  ImmediateFuture<folly::Unit> importTreeManifestForRoot(
       const RootId& rootId,
-      const Hash20& manifestId);
+      const Hash20& manifestId,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Import the manifest for the specified revision using mercurial
    * treemanifest data.
    */
-  folly::Future<TreePtr> importTreeManifest(const ObjectId& commitId);
+  folly::Future<TreePtr> importTreeManifest(
+      const ObjectId& commitId,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Objects that can be imported from Hg
@@ -138,7 +146,9 @@ class HgBackingStore {
   HgBackingStore(HgBackingStore const&) = delete;
   HgBackingStore& operator=(HgBackingStore const&) = delete;
 
-  folly::Future<TreePtr> importTreeManifestImpl(Hash20 manifestNode);
+  folly::Future<TreePtr> importTreeManifestImpl(
+      Hash20 manifestNode,
+      const ObjectFetchContextPtr& context);
 
   void initializeDatapackImport(AbsolutePathPiece repository);
   folly::Future<TreePtr> importTreeImpl(
@@ -170,10 +180,10 @@ class HgBackingStore {
   // load).
   folly::Executor* serverThreadPool_;
 
+  std::shared_ptr<StructuredLogger> logger_;
+
   std::string repoName_;
   HgDatapackStore datapackStore_;
-
-  std::shared_ptr<StructuredLogger> logger_;
 
   // Track metrics for imports currently fetching data from hg
   mutable RequestMetricsScope::LockedRequestWatchList liveImportBlobWatches_;

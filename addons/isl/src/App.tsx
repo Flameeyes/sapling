@@ -6,15 +6,18 @@
  */
 
 import type {RepositoryError} from './types';
+import type {ReactNode} from 'react';
 
 import {AccessGlobalRecoil} from './AccessGlobalRecoil';
 import {CommandHistoryAndProgress} from './CommandHistoryAndProgress';
 import {CommitInfoSidebar} from './CommitInfoView/CommitInfoView';
 import {CommitTreeList} from './CommitTreeList';
 import {ComparisonViewModal} from './ComparisonView/ComparisonViewModal';
+import {CwdSelections} from './CwdSelector';
 import {EmptyState} from './EmptyState';
 import {ErrorBoundary, ErrorNotice} from './ErrorNotice';
 import {ISLCommandContext, useCommand} from './ISLShortcuts';
+import {TooltipRootContainer} from './Tooltip';
 import {TopBar} from './TopBar';
 import {TopLevelErrors} from './TopLevelErrors';
 import {tracker} from './analytics';
@@ -22,9 +25,9 @@ import {islDrawerState} from './drawerState';
 import {GettingStartedModal} from './gettingStarted/GettingStartedModal';
 import {I18nSupport, t, T} from './i18n';
 import platform from './platform';
-import {useMainContentWidth} from './responsive';
+import {useMainContentWidth, zoomUISettingAtom} from './responsive';
 import {applicationinfo, repositoryInfo} from './serverAPIState';
-import {ThemeRoot} from './theme';
+import {themeState} from './theme';
 import {ModalContainer} from './useModal';
 import {VSCodeButton} from '@vscode/webview-ui-toolkit/react';
 import React from 'react';
@@ -42,22 +45,45 @@ export default function App() {
       <I18nSupport>
         <RecoilRoot>
           <AccessGlobalRecoil />
-          <ThemeRoot>
+          <ISLRoot>
             <ISLCommandContext>
               <ErrorBoundary>
                 <ISLDrawers />
-                <div className="tooltip-root-container" data-testid="tooltip-root-container" />
+                <TooltipRootContainer />
                 <GettingStartedModal />
                 <ComparisonViewModal />
                 <ModalContainer />
                 <ContextMenus />
               </ErrorBoundary>
             </ISLCommandContext>
-          </ThemeRoot>
+          </ISLRoot>
         </RecoilRoot>
       </I18nSupport>
     </React.StrictMode>
   );
+}
+
+function ISLRoot({children}: {children: ReactNode}) {
+  const theme = useRecoilValue(themeState);
+  useRecoilValue(zoomUISettingAtom);
+  return (
+    <div
+      className={`isl-root ${theme}-theme`}
+      onDragEnter={handleDragAndDrop}
+      onDragOver={handleDragAndDrop}>
+      {children}
+    </div>
+  );
+}
+
+function handleDragAndDrop(e: React.DragEvent<HTMLDivElement>) {
+  // VS Code tries to capture drag & drop events to open files. But if you're dragging
+  // on ISL, you probably want to do an ImageUpload. Prevent this event from propagating to vscode.
+  if (e.dataTransfer?.types?.some(t => t === 'Files')) {
+    e.stopPropagation();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
 }
 
 function ISLDrawers() {
@@ -132,16 +158,19 @@ function ISLNullState({repoError}: {repoError: RepositoryError}) {
   if (repoError != null) {
     if (repoError.type === 'cwdNotARepository') {
       content = (
-        <EmptyState>
-          <div>
-            <T>Not a valid repository</T>
-          </div>
-          <p>
-            <T replace={{$cwd: <code>{repoError.cwd}</code>}}>
-              $cwd is not a valid Sapling repository. Clone or init a repository to use ISL.
-            </T>
-          </p>
-        </EmptyState>
+        <>
+          <EmptyState>
+            <div>
+              <T>Not a valid repository</T>
+            </div>
+            <p>
+              <T replace={{$cwd: <code>{repoError.cwd}</code>}}>
+                $cwd is not a valid Sapling repository. Clone or init a repository to use ISL.
+              </T>
+            </p>
+          </EmptyState>
+          <CwdSelections dismiss={() => null} />
+        </>
       );
     } else if (repoError.type === 'invalidCommand') {
       content = (

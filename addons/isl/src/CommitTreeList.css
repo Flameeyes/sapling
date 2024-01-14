@@ -25,6 +25,7 @@
 }
 .commit-tree-root {
   margin-left: calc(3.5 * var(--pad));
+  margin-top: 0;
 }
 .commit-tree-stack-actions {
   display: flex;
@@ -85,21 +86,27 @@
 
 .commit-avatar {
   position: absolute;
-  border: 2px solid var(--foreground);
+  border: 1px solid var(--foreground);
   margin-bottom: 0px;
   z-index: 3;
   background-color: var(--foreground, hsla(0, 0%, 0%, 0.1));
   display: inline-block;
   vertical-align: top;
   overflow: hidden;
-  left: -21px;
+  left: -22px;
   top: auto;
   bottom: auto;
   border-radius: 50%;
-  height: 14px;
-  width: 14px;
+  height: 16px;
+  width: 16px;
   box-sizing: border-box;
   transition: transform 0.2s, box-shadow 0.3s;
+}
+
+.commit-avatar img {
+  position: absolute;
+  width: 14px;
+  height: 14px;
 }
 
 /* Avatar may render below the top of the border,
@@ -152,9 +159,17 @@
   align-items: center;
 }
 
-.commit-rows.narrow {
+.commit-tree-root {
+  min-width: 450px;
+}
+
+.commit-tree-narrow .commit-rows {
   flex-direction: column;
   align-items: initial;
+}
+
+.commit-tree-narrow .commit-group {
+  gap: 0;
 }
 
 .commit-details {
@@ -165,6 +180,20 @@
   position: relative;
   box-sizing: border-box;
   user-select: none;
+}
+
+.commit-details:focus-visible {
+  outline: var(--focus-border) 1px auto;
+  outline-offset: var(--halfpad);
+}
+
+.commit-wide-drag-target {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 500px; /* Arbitrary minimum size we want to be able to drag through, so we can't "miss" small commits */
+  height: 100%;
+  z-index: -100;
 }
 
 .commit-details > .tooltip-creator {
@@ -230,19 +259,23 @@
   margin-right: var(--halfpad);
 }
 
-.goto-button {
-  opacity: 0;
-  transition: opacity 0.1s;
-}
-
 .goto-button .codicon {
   margin-left: var(--halfpad);
 }
 
-.commit:hover .goto-button {
+.goto-button,
+.open-commit-info-button {
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.commit:hover .goto-button,
+.commit:hover .open-commit-info-button {
   opacity: 1;
 }
-.goto-button:focus-within {
+
+.goto-button:focus-within,
+.open-commit-info-button:focus-within {
   opacity: 1;
 }
 

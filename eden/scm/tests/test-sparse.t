@@ -1,10 +1,6 @@
 #chg-compatible
   $ configure modernclient
 
-#if fsmonitor
-  $ setconfig workingcopy.ruststatus=false
-#endif
-
 BUG: this shouldn't be necessary, but currently "hg add -s ..." or "hg sparse
 include ..." doesn't work for untracked files not previously in the sparse
 profile.
@@ -477,7 +473,7 @@ We need to disable the SCM_SAMPLING_FILEPATH env var because arcanist may set it
   ...     if parsedrecord['category'] == 'dirstate_size':
   ...         print('{0}: {1}'.format(parsedrecord['category'],
   ...                                 parsedrecord['data']['dirstate_size']))
-  dirstate_size: 3
+  dirstate_size: * (glob)
   $ cat >> profile_base << EOF
   > [include]
   > a
@@ -530,9 +526,7 @@ Verify regular expressions are no longer supported
   > re:s.ow
   > EOF
   $ hg ci -Aqm 'initial'
-  $ hg sparse include re:sh.w
-  abort: treematcher does not support regular expressions or relpath matchers: ['glob:.hg*', 're:sh.w']
-  [255]
-  $ hg sparse enable sparse.profile
-  abort: treematcher does not support regular expressions or relpath matchers: ['glob:.hg*', 're:s.ow']
-  [255]
+  $ LOG=sparse=warn hg sparse include re:sh.w
+  ERROR sparse: ignoring unsupported sparse pattern err=unsuppported pattern type re pat=Include("re:sh.w") src=$TESTTMP/rerepo/.hg/sparse
+  $ LOG=sparse=warn hg sparse enable sparse.profile 2>&1 | head -1
+  ERROR sparse: ignoring unsupported sparse pattern err=unsuppported pattern type re pat=Include("re:sh.w") src=$TESTTMP/rerepo/.hg/sparse

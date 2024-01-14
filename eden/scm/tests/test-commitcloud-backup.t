@@ -2,12 +2,10 @@
 #inprocess-hg-incompatible
   $ setconfig format.use-segmented-changelog=true
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
 
   $ enable amend
   $ setconfig infinitepushbackup.hostname=testhost
-  $ disable treemanifest
 
   $ . "$TESTDIR/library.sh"
   $ . "$TESTDIR/infinitepush/library.sh"
@@ -15,8 +13,7 @@
   $ enable remotenames
 
 Setup server
-  $ hg init repo
-  $ cd repo
+  $ newserver repo
   $ setupserver
   $ cd ..
 
@@ -34,11 +31,11 @@ Make commit and backup it.
   remote: pushing 1 commit:
   remote:     7e6a6fd9c7c8  commit
   $ scratchnodes
-  7e6a6fd9c7c8c8c307ee14678f03d63af3a7b455 168423c30397d95ef5f44d883f0887f0f5be0936
+  7e6a6fd9c7c8c8c307ee14678f03d63af3a7b455 c13b98aa53dd65cc9225f3d7ebf6dbe98e910948
 
 Make first commit public (by doing push) and then backup new commit
   $ hg debugmakepublic .
-  $ hg push --to master --create --force
+  $ hg push --to master --create 
   pushing rev 7e6a6fd9c7c8 to destination ssh://user@dummy/repo bookmark master
   searching for changes
   exporting bookmark master

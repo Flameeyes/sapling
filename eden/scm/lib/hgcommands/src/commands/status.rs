@@ -8,14 +8,12 @@
 mod print;
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use anyhow::Result;
 use clidispatch::fallback;
 use clidispatch::ReqCtx;
 use cliparser::define_flags;
 use configloader::configmodel::ConfigExt;
-use pathmatcher::AlwaysMatcher;
 use print::PrintConfig;
 use print::PrintConfigStatusTypes;
 use repo::repo::Repo;
@@ -104,17 +102,10 @@ pub fn run(ctx: ReqCtx<StatusOpts>, repo: &mut Repo, wc: &mut WorkingCopy) -> Re
 
     let rev_check = ctx.opts.rev.is_empty() || (ctx.opts.rev.len() == 1 && ctx.opts.rev[0] == ".");
 
-    let args_check =
-        ctx.opts.args.is_empty() || (ctx.opts.args.len() == 1 && ctx.opts.args[0] == "re:.");
-
     if ctx.opts.all
         || !ctx.opts.change.is_empty()
         || !ctx.opts.terse.is_empty()
         || !rev_check
-        || !ctx.opts.walk_opts.include.is_empty()
-        || !ctx.opts.walk_opts.exclude.is_empty()
-        || !args_check
-        || ctx.opts.ignored
         || ctx.opts.clean
     {
         tracing::debug!(target: "status_info", status_detail="unsupported_args");
@@ -130,6 +121,35 @@ pub fn run(ctx: ReqCtx<StatusOpts>, repo: &mut Repo, wc: &mut WorkingCopy) -> Re
         tracing::debug!(target: "status_info", status_detail="morestatus_needed");
         fallback!("morestatus functionality needed");
     }
+
+    let cwd = std::env::current_dir()?;
+    let lgr = ctx.logger();
+
+    let matcher = match pathmatcher::cli_matcher(
+        &ctx.opts.args,
+        &ctx.opts.walk_opts.include,
+        &ctx.opts.walk_opts.exclude,
+        pathmatcher::PatternKind::RelPath,
+        wc.vfs().case_sensitive(),
+        wc.vfs().root(),
+        &cwd,
+        &mut ctx.io().input(),
+    ) {
+        Ok(matcher) => {
+            for warning in matcher.warnings() {
+                lgr.warn(format!("warning: {}", warning));
+            }
+
+            Arc::new(matcher)
+        }
+        Err(err) => match err.downcast_ref::<pathmatcher::Error>() {
+            Some(pathmatcher::Error::UnsupportedPatternKind(_)) => {
+                tracing::debug!(target: "status_info", status_detail="unsupported_pattern");
+                fallback!("unsupported pattern");
+            }
+            _ => return Err(err),
+        },
+    };
 
     let StatusOpts {
         modified,
@@ -179,20 +199,13 @@ pub fn run(ctx: ReqCtx<StatusOpts>, repo: &mut Repo, wc: &mut WorkingCopy) -> Re
 
     tracing::debug!(target: "status_info", status_mode="rust");
 
-    let matcher = Arc::new(AlwaysMatcher::new());
-    let status = wc.status(
-        matcher.clone(),
-        SystemTime::UNIX_EPOCH,
-        repo.config(),
-        ctx.io(),
-    )?;
+    let status = wc.status(matcher.clone(), ignored, repo.config(), &ctx.logger())?;
 
     // This should be passed the "full" matcher including
     // ignores, sparse, etc., but in practice probably doesn't
     // make a difference.
-    let copymap = wc.copymap(matcher)?.into_iter().collect();
+    let copymap = wc.copymap(matcher.clone())?.into_iter().collect();
 
-    let cwd = std::env::current_dir()?;
     let relativizer = RepoPathRelativizer::new(cwd, repo.path());
     let formatter = get_formatter(
         repo.config(),
@@ -202,7 +215,7 @@ pub fn run(ctx: ReqCtx<StatusOpts>, repo: &mut Repo, wc: &mut WorkingCopy) -> Re
         Box::new(ctx.io().output()),
     )?;
 
-    let mut lgr = ctx.logger();
+    let lgr = ctx.logger();
     for invalid in status.invalid_path() {
         lgr.warn(format!(
             "skipping invalid filename: '{}'",
@@ -212,6 +225,30 @@ pub fn run(ctx: ReqCtx<StatusOpts>, repo: &mut Repo, wc: &mut WorkingCopy) -> Re
 
     for invalid in status.invalid_type() {
         lgr.warn(format!("{invalid}: invalid file type"));
+    }
+
+    // Give the user warnings if explicitly specified files are "bad".
+    for file in matcher.exact_files() {
+        match wc.vfs().metadata(file) {
+            Ok(fs_meta) => {
+                // Warn about invalid file type (but only if we didn't already warn).
+                if !fs_meta.is_dir()
+                    && !fs_meta.is_file()
+                    && !fs_meta.is_symlink()
+                    && !status.invalid_type().contains(file)
+                {
+                    lgr.warn(format!(
+                        "{}: invalid file type",
+                        relativizer.relativize(file)
+                    ));
+                }
+            }
+            Err(err) => {
+                if !status.contains(file) {
+                    lgr.warn(format!("{}: {err}", relativizer.relativize(file)));
+                }
+            }
+        }
     }
 
     ctx.maybe_start_pager(repo.config())?;

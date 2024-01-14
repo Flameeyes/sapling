@@ -1,9 +1,6 @@
 #chg-compatible
 
-  $ setconfig status.use-rust=False workingcopy.use-rust=False
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig workingcopy.ruststatus=False
-  $ disable treemanifest
 
 test merge-tools configuration - mostly exercising filemerge.py
 
@@ -1072,6 +1069,45 @@ premerge=keep-merge3 keeps conflict markers with base content:
   # hg resolve --list
   R f
 
+premerge=keep-mergediff keeps conflict markers with base content:
+
+  $ beforemerge
+  [merge-tools]
+  false.whatever=
+  true.priority=1
+  true.executable=cat
+  # hg goto -C 1
+  $ hg merge -r 4 --config merge-tools.true.premerge=keep-mergediff
+  merging f
+  <<<<<<<
+  ------- base
+  +++++++ working copy: ef83787e2614 - test: revision 1
+  -revision 0
+  +revision 1
+   space
+  ======= merge rev:    81448d39c9a0 - test: revision 4
+  revision 4
+  >>>>>>>
+  revision 0
+  space
+  revision 4
+  0 files updated, 1 files merged, 0 files removed, 0 files unresolved
+  (branch merge, don't forget to commit)
+  $ aftermerge
+  # cat f
+  <<<<<<<
+  ------- base
+  +++++++ working copy: ef83787e2614 - test: revision 1
+  -revision 0
+  +revision 1
+   space
+  ======= merge rev:    81448d39c9a0 - test: revision 4
+  revision 4
+  >>>>>>>
+  # hg stat
+  M f
+  # hg resolve --list
+  R f
 
 Tool execution
 
@@ -1343,7 +1379,6 @@ specified file as expected
 
   $ hg debugpickmergetool -X f
   $ hg debugpickmergetool unknown
-  unknown: no such file in rev ef83787e2614
 
 (--absent emulates merging change and delete)
 

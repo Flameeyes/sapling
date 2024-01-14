@@ -9,7 +9,6 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use anyhow::bail;
-use clidispatch::abort;
 use clidispatch::abort_if;
 use clidispatch::errors;
 use clidispatch::OptionalRepo;
@@ -53,6 +52,10 @@ define_flags! {
         #[short('s')]
         system: bool,
 
+        /// delete specified config items
+        #[short('d')]
+        delete: bool,
+
         formatter_opts: FormatterOpts,
 
         #[args]
@@ -73,7 +76,13 @@ pub fn run(ctx: ReqCtx<ConfigOpts>, repo: &mut OptionalRepo) -> Result<u8> {
         ));
     }
 
-    if ctx.opts.edit || ctx.opts.local || ctx.opts.global || ctx.opts.user || ctx.opts.system {
+    if ctx.opts.edit
+        || ctx.opts.local
+        || ctx.opts.global
+        || ctx.opts.user
+        || ctx.opts.system
+        || ctx.opts.delete
+    {
         bail!(errors::FallbackToPython(
             "config edit options not supported in Rust".to_owned()
         ));
@@ -321,6 +330,9 @@ pub fn doc() -> &'static str {
     an editor to edit the config file. If there are arguments in
     ``section.name=value`` or ``section.name value`` format, the appropriate
     config file will be updated directly without spawning an editor.
+
+    With ``--delete``, the specified config items are deleted from the config
+    file.
 
     With ``--debug``, the source (filename and line number) is printed
     for each config item.

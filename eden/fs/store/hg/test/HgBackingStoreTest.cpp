@@ -5,14 +5,13 @@
  * GNU General Public License version 2.
  */
 
-#include <folly/executors/QueuedImmediateExecutor.h>
 #include <folly/experimental/TestUtil.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 #include <folly/test/TestUtils.h>
 #include <stdexcept>
 
-#include "eden/common/utils/ProcessNameCache.h"
+#include "eden/common/utils/ProcessInfoCache.h"
 #include "eden/fs/config/EdenConfig.h"
 #include "eden/fs/config/ReloadableConfig.h"
 #include "eden/fs/model/Tree.h"
@@ -27,6 +26,7 @@
 #include "eden/fs/telemetry/EdenStats.h"
 #include "eden/fs/telemetry/NullStructuredLogger.h"
 #include "eden/fs/testharness/HgRepo.h"
+#include "eden/fs/utils/FaultInjector.h"
 #include "eden/fs/utils/ImmediateFuture.h"
 
 using namespace facebook::eden;
@@ -68,7 +68,7 @@ struct HgBackingStoreTest : TestRepo, ::testing::Test {
         backingStore,
         treeCache,
         stats.copy(),
-        std::make_shared<ProcessNameCache>(),
+        std::make_shared<ProcessInfoCache>(),
         std::make_shared<NullStructuredLogger>(),
         rawEdenConfig,
         true,
@@ -84,6 +84,7 @@ struct HgBackingStoreTest : TestRepo, ::testing::Test {
       std::make_shared<ReloadableConfig>(
           rawEdenConfig,
           ConfigReloadBehavior::NoReload)};
+  FaultInjector faultInjector{/*enabled=*/false};
   std::shared_ptr<HgQueuedBackingStore> backingStore{
       std::make_shared<HgQueuedBackingStore>(
           localStore,
@@ -93,7 +94,8 @@ struct HgBackingStoreTest : TestRepo, ::testing::Test {
               &importer,
               edenConfig,
               localStore,
-              stats.copy()),
+              stats.copy(),
+              &faultInjector),
           edenConfig,
           std::make_shared<NullStructuredLogger>(),
           nullptr)};
@@ -117,17 +119,17 @@ TEST_F(
   auto tree1 =
       objectStore->getRootTree(commit1, ObjectFetchContext::getNullContext())
           .get(0ms);
-  EXPECT_TRUE(tree1);
+  EXPECT_TRUE(tree1.tree);
   ASSERT_THAT(
-      getTreeNames(tree1),
+      getTreeNames(tree1.tree),
       ::testing::ElementsAre(PathComponent{"foo"}, PathComponent{"src"}));
 
   localStore->clearKeySpace(KeySpace::TreeFamily);
   auto tree2 =
       objectStore->getRootTree(commit1, ObjectFetchContext::getNullContext())
           .get(0ms);
-  EXPECT_TRUE(tree2);
+  EXPECT_TRUE(tree2.tree);
   ASSERT_THAT(
-      getTreeNames(tree1),
+      getTreeNames(tree1.tree),
       ::testing::ElementsAre(PathComponent{"foo"}, PathComponent{"src"}));
 }

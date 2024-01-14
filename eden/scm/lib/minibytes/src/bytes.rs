@@ -9,9 +9,12 @@ use std::any::Any;
 use std::ops::Range;
 use std::ops::RangeBounds;
 use std::sync::Arc;
+use std::sync::Weak;
 
 pub type Bytes = AbstractBytes<[u8]>;
 pub trait BytesOwner: AsRef<[u8]> + Send + Sync + 'static {}
+
+pub type WeakBytes = Weak<dyn AbstractOwner<[u8]>>;
 
 /// Immutable bytes with zero-copy slicing and cloning.
 pub struct AbstractBytes<T: ?Sized> {
@@ -163,6 +166,24 @@ where
         let any = owner.as_any_mut();
         any.downcast_mut()
     }
+
+    /// Create a weak pointer. Returns `None` if backed by a static buffer.
+    /// Note the weak pointer has the full range of the buffer.
+    pub fn downgrade(&self) -> Option<Weak<dyn AbstractOwner<T>>> {
+        self.owner.as_ref().map(Arc::downgrade)
+    }
+
+    /// The reverse of `downgrade`. Returns `None` if the value was dropped.
+    /// Note the upgraded `Bytes` has the full range of the buffer.
+    pub fn upgrade(weak: &Weak<dyn AbstractOwner<T>>) -> Option<Self> {
+        let arc = weak.upgrade()?;
+        let slice_like: &T = arc.as_ref().as_ref();
+        Some(Self {
+            ptr: slice_like.as_ptr(),
+            len: slice_like.len(),
+            owner: Some(arc),
+        })
+    }
 }
 
 impl Bytes {
@@ -191,6 +212,13 @@ impl Bytes {
             }
             Some(_) | None => self.as_slice().to_vec(),
         }
+    }
+}
+
+#[cfg(feature = "non-zerocopy-into")]
+impl From<Bytes> for Vec<u8> {
+    fn from(value: Bytes) -> Vec<u8> {
+        value.into_vec()
     }
 }
 

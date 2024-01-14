@@ -1,7 +1,6 @@
 #chg-compatible
   $ setconfig format.use-segmented-changelog=false
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig workingcopy.ruststatus=False
   $ setconfig experimental.allowfilepeer=True
 
   $ configure modern
@@ -12,7 +11,7 @@
   $ cd $TESTTMP
 
   $ newremoterepo
-  $ setconfig remotefilelog.localdatarepack=True lfs.moveafterupload=True
+  $ setconfig lfs.moveafterupload=True
 
 # First, let's generate some LFS blobs on the server
 
@@ -69,24 +68,13 @@
   $ cd ..
 
   $ newremoterepo
-  $ setconfig remotefilelog.localdatarepack=True lfs.moveafterupload=True
+  $ setconfig lfs.moveafterupload=True
 
 # Let's validate that both the LFS extension, and the remotefilelog LFS can co-exist when pulling blobs
   $ setconfig remotefilelog.lfs=True
 
   $ hg pull -q
   $ hg goto master
-  2 files updated, 0 files merged, 0 files removed, 0 files unresolved
-  $ cat x
-  THIS IS AN LFS BLOB
-  $ cat y
-  THIS IS ANOTHER LFS BLOB
-
-# Disable the remotefilelog LFS implementation to verify we can still read the LFS blobs properly.
-  $ setconfig remotefilelog.lfs=False
-  $ hg up null
-  0 files updated, 0 files merged, 2 files removed, 0 files unresolved
-  $ hg up -r tip
   2 files updated, 0 files merged, 0 files removed, 0 files unresolved
   $ cat x
   THIS IS AN LFS BLOB

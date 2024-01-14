@@ -1,8 +1,6 @@
 #debugruntest-compatible
 #inprocess-hg-incompatible
   $ setconfig experimental.allowfilepeer=True
-  $ setconfig status.use-rust=false
-  $ setconfig workingcopy.ruststatus=false
 
   $ hg init t
   $ cd t
@@ -42,7 +40,7 @@
      discovered dir src: 'a/' -> dst: 'b/'
      pending file src: 'a/c' -> dst: 'b/c'
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: *, local: *+, remote: * (glob)
    a/a: other deleted -> r
   removing a/a
@@ -88,7 +86,7 @@
      discovered dir src: 'a/' -> dst: 'b/'
      pending file src: 'a/c' -> dst: 'b/c'
   resolving manifests
-   branchmerge: True, force: False, partial: False
+   branchmerge: True, force: False
    ancestor: *, local: *+, remote: * (glob)
    b/c: local directory rename - get from a/c -> dg
   getting a/c to b/c

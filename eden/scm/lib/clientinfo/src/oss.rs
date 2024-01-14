@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Default, Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct FbClientInfo {}
 
 impl FbClientInfo {
@@ -25,6 +25,10 @@ impl FbClientInfo {
     }
 
     pub fn sandcastle_alias(&self) -> Option<&str> {
+        None
+    }
+
+    pub fn sandcastle_type(&self) -> Option<&str> {
         None
     }
 }

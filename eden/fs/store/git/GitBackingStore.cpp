@@ -10,7 +10,8 @@
 #include <folly/Conv.h>
 #include <folly/futures/Future.h>
 #include <folly/logging/xlog.h>
-#include <git2.h>
+// TODO(T168360028)
+#include <git2.h> // @manual
 
 #include "eden/fs/model/Blob.h"
 #include "eden/fs/model/Hash.h"
@@ -107,7 +108,7 @@ std::string GitBackingStore::renderObjectId(const ObjectId& objectId) {
   return objectId.asHexString();
 }
 
-ImmediateFuture<TreePtr> GitBackingStore::getRootTree(
+ImmediateFuture<BackingStore::GetRootTreeResult> GitBackingStore::getRootTree(
     const RootId& rootId,
     const ObjectFetchContextPtr& /*context*/) {
   // TODO: Use a separate thread pool to do the git I/O
@@ -141,7 +142,7 @@ ImmediateFuture<TreePtr> GitBackingStore::getRootTree(
   ObjectId treeID = oid2Hash(git_commit_tree_id(commit));
 
   // Now get the specified tree.
-  return getTreeImpl(treeID);
+  return GetRootTreeResult{getTreeImpl(treeID), treeID};
 }
 
 SemiFuture<BackingStore::GetTreeResult> GitBackingStore::getTree(

@@ -1,7 +1,6 @@
 #debugruntest-compatible
 
   $ setconfig devel.segmented-changelog-rev-compat=true
-  $ setconfig workingcopy.ruststatus=false
 This runs with TZ="GMT"
 
   $ hg init repo
@@ -262,7 +261,7 @@ Test issue 3764 (interpreting 'today' and 'yesterday')
   $ echo "hello" >> a
   >>> import datetime
   >>> today = datetime.date.today().strftime("%b %d")
-  >>> yesterday = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%b %d")
+  >>> yesterday = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%b %d %Y")
   >>> dates = open('dates', 'w')
   >>> _ = dates.write(today + '\n')
   >>> _ = dates.write(yesterday + '\n')

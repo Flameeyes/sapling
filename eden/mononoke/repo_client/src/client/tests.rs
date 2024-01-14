@@ -6,11 +6,16 @@
  */
 
 #![cfg(test)]
+use std::pin::pin;
+
 use blobstore::Loadable;
 use fbinit::FacebookInit;
 use fixtures::ManyFilesDirs;
 use fixtures::TestRepoFixture;
 use futures::compat::Future01CompatExt;
+use justknobs::test_helpers::with_just_knobs_async;
+use justknobs::test_helpers::JustKnobsInMemory;
+use justknobs::test_helpers::KnobVal;
 use manifest::Entry;
 use manifest::ManifestOps;
 use maplit::hashset;
@@ -108,7 +113,7 @@ async fn get_changed_manifests_stream_test_impl(fb: FacebookInit) -> Result<(), 
         .map(|(_, path)| path)
         .collect::<Vec<_>>();
     res.sort();
-    let mut expected = vec![None, Some(MPath::new("dir2")?)];
+    let mut expected = vec![None, Some(NonRootMPath::new("dir2")?)];
     expected.sort();
     assert_eq!(res, expected);
 
@@ -133,10 +138,10 @@ async fn get_changed_manifests_stream_test_impl(fb: FacebookInit) -> Result<(), 
     res.sort();
     let mut expected = vec![
         None,
-        Some(MPath::new("dir1")?),
-        Some(MPath::new("dir1/subdir1")?),
-        Some(MPath::new("dir1/subdir1/subsubdir1")?),
-        Some(MPath::new("dir1/subdir1/subsubdir2")?),
+        Some(NonRootMPath::new("dir1")?),
+        Some(NonRootMPath::new("dir1/subdir1")?),
+        Some(NonRootMPath::new("dir1/subdir1/subsubdir1")?),
+        Some(NonRootMPath::new("dir1/subdir1/subsubdir2")?),
     ];
     expected.sort();
     assert_eq!(res, expected);
@@ -232,7 +237,7 @@ async fn get_changed_manifests_stream_test_base_path_impl(fb: FacebookInit) -> R
             .into_iter()
             .filter(|(_, curpath)| match &path {
                 Some(path) => {
-                    let elems = MPath::iter_opt(curpath.as_ref());
+                    let elems = NonRootMPath::iter_opt(curpath.as_ref());
                     path.is_prefix_of(elems)
                 }
                 None => true,
@@ -247,34 +252,45 @@ async fn get_changed_manifests_stream_test_base_path_impl(fb: FacebookInit) -> R
 
 #[fbinit::test]
 async fn test_lfs_rollout(fb: FacebookInit) -> Result<(), Error> {
-    let ctx = CoreContext::test_mock(fb);
+    with_just_knobs_async(
+        JustKnobsInMemory::new(hashmap! {
+            "scm/mononoke_timeouts:repo_client_getpack_timeout_secs".to_string() => KnobVal::Int(18000),
+        }),
+        pin!{
 
-    assert!(!run_and_check_if_lfs(&ctx, LfsParams::default()).await?);
+            async move {
 
-    // Rollout percentage is 100 and threshold is set - enable lfs
-    let lfs_params = LfsParams {
-        threshold: Some(5),
-        rollout_percentage: 100,
-        ..Default::default()
-    };
-    assert!(run_and_check_if_lfs(&ctx, lfs_params).await?);
+                let ctx = CoreContext::test_mock(fb);
 
-    // Rollout percentage is 0 - no lfs is enabled
-    let lfs_params = LfsParams {
-        threshold: Some(5),
-        rollout_percentage: 0,
-        ..Default::default()
-    };
-    assert!(!run_and_check_if_lfs(&ctx, lfs_params).await?);
+                assert!(!run_and_check_if_lfs(&ctx, LfsParams::default()).await?);
 
-    // Rollout percentage is 100, but threshold is too high
-    let lfs_params = LfsParams {
-        threshold: Some(500),
-        rollout_percentage: 100,
-        ..Default::default()
-    };
-    assert!(!run_and_check_if_lfs(&ctx, lfs_params).await?);
-    Ok(())
+                // Rollout percentage is 100 and threshold is set - enable lfs
+                let lfs_params = LfsParams {
+                    threshold: Some(5),
+                    rollout_percentage: 100,
+                    ..Default::default()
+                };
+                assert!(run_and_check_if_lfs(&ctx, lfs_params).await?);
+
+                // Rollout percentage is 0 - no lfs is enabled
+                let lfs_params = LfsParams {
+                    threshold: Some(5),
+                    rollout_percentage: 0,
+                    ..Default::default()
+                };
+                assert!(!run_and_check_if_lfs(&ctx, lfs_params).await?);
+
+                // Rollout percentage is 100, but threshold is too high
+                let lfs_params = LfsParams {
+                    threshold: Some(500),
+                    rollout_percentage: 100,
+                    ..Default::default()
+                };
+                assert!(!run_and_check_if_lfs(&ctx, lfs_params).await?);
+                Ok(())
+        }
+    },
+    ).await
 }
 
 #[fbinit::test]
@@ -378,13 +394,13 @@ async fn run_and_check_if_lfs(ctx: &CoreContext, lfs_params: LfsParams) -> Resul
 
     let hg_cs = hg_cs_id.load(ctx, &repo.repo_blobstore().clone()).await?;
 
-    let path = MPath::new("largefile")?;
+    let path = NonRootMPath::new("largefile")?;
     let maybe_entry = hg_cs
         .manifestid()
         .find_entry(
             ctx.clone(),
             repo.repo_blobstore().clone(),
-            Some(path.clone()),
+            path.clone().into(),
         )
         .await?
         .unwrap();
@@ -429,9 +445,9 @@ async fn fetch_mfs(
     repo: &BlobRepo,
     root_mf_id: HgManifestId,
     base_root_mf_id: HgManifestId,
-    base_path: Option<MPath>,
+    base_path: Option<NonRootMPath>,
     depth: usize,
-) -> Result<Vec<(HgManifestId, Option<MPath>)>, Error> {
+) -> Result<Vec<(HgManifestId, Option<NonRootMPath>)>, Error> {
     let fetched_mfs = get_changed_manifests_stream(
         ctx.clone(),
         repo,

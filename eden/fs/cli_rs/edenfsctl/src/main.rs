@@ -6,8 +6,6 @@
  */
 
 use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::anyhow;
@@ -19,45 +17,14 @@ use edenfs_commands::is_command_enabled;
 use edenfs_telemetry::cli_usage::CliUsageSample;
 #[cfg(fbcode_build)]
 use edenfs_telemetry::send;
+#[cfg(fbcode_build)]
+use edenfs_telemetry::EDENFSCTL_CLI_USAGE;
+#[cfg(windows)]
+use edenfs_utils::execute_par;
 #[cfg(windows)]
 use edenfs_utils::strip_unc_prefix;
 use fbinit::FacebookInit;
 use tracing_subscriber::filter::EnvFilter;
-
-#[cfg(windows)]
-const PYTHON_CANDIDATES: &[&str] = &[
-    r"c:\tools\fb-python\fb-python39",
-    r"c:\tools\fb-python\fb-python38",
-    r"c:\Python39",
-    r"c:\Python38",
-];
-
-#[cfg(windows)]
-fn find_python() -> Option<PathBuf> {
-    for candidate in PYTHON_CANDIDATES.iter() {
-        let candidate = Path::new(candidate);
-        let python = candidate.join("python.exe");
-
-        if candidate.exists() && python.exists() {
-            tracing::debug!("Found Python runtime at {}", python.display());
-            return Some(python);
-        }
-    }
-    None
-}
-
-#[cfg(windows)]
-fn execute_par(par: PathBuf) -> Result<Command> {
-    let python = find_python().ok_or_else(|| {
-        anyhow!(
-            "Unable to find Python runtime. Paths tried:\n\n - {}",
-            PYTHON_CANDIDATES.join("\n - ")
-        )
-    })?;
-    let mut python = Command::new(python);
-    python.arg(par);
-    Ok(python)
-}
 
 fn python_fallback() -> Result<Command> {
     if let Ok(args) = std::env::var("EDENFSCTL_REAL") {
@@ -224,7 +191,7 @@ fn main(_fb: FacebookInit) -> Result<()> {
     // NOTE: if you are considering passing `FacebookInit` down, you may want to check
     // [`fbinit::expect_init`].
     #[cfg(fbcode_build)]
-    let mut sample = CliUsageSample::build(_fb);
+    let mut sample = CliUsageSample::build();
 
     let code = match wrapper_main() {
         Ok(code) => Ok(code),
@@ -238,7 +205,7 @@ fn main(_fb: FacebookInit) -> Result<()> {
     #[cfg(fbcode_build)]
     {
         sample.set_exit_code(*code.as_ref().unwrap_or(&1));
-        send(sample.builder);
+        send(EDENFSCTL_CLI_USAGE.to_string(), sample.sample);
     }
 
     match code {

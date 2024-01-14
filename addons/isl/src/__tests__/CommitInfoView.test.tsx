@@ -10,7 +10,7 @@ import type {Hash} from '../types';
 import App from '../App';
 import * as commitMessageFields from '../CommitInfoView/CommitMessageFields';
 import platform from '../platform';
-import {CommitInfoTestUtils} from '../testQueries';
+import {CommitInfoTestUtils, ignoreRTL} from '../testQueries';
 import {
   resetTestMessages,
   expectMessageSentToServer,
@@ -19,8 +19,9 @@ import {
   closeCommitInfoSidebar,
   simulateUncommittedChangedFiles,
   simulateMessageFromServer,
+  openCommitInfoSidebar,
 } from '../testUtils';
-import {CommandRunner, SucceedableRevset} from '../types';
+import {CommandRunner, succeedableRevset} from '../types';
 import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {act} from 'react-dom/test-utils';
@@ -65,6 +66,7 @@ describe('CommitInfoView', () => {
     beforeEach(() => {
       render(<App />);
       act(() => {
+        openCommitInfoSidebar();
         expectMessageSentToServer({
           type: 'subscribe',
           kind: 'smartlogCommits',
@@ -81,11 +83,6 @@ describe('CommitInfoView', () => {
     });
 
     describe('drawer', () => {
-      it('starts with commit info open', () => {
-        expect(screen.getByTestId('commit-info-view')).toBeInTheDocument();
-        expect(screen.getByText('Commit Info')).toBeInTheDocument();
-      });
-
       it('can close commit info sidebar by clicking label', () => {
         expect(screen.getByTestId('commit-info-view')).toBeInTheDocument();
         expect(screen.getByText('Commit Info')).toBeInTheDocument();
@@ -143,8 +140,8 @@ describe('CommitInfoView', () => {
       });
 
       it('shows uncommitted changes for head commit', () => {
-        expect(withinCommitInfo().queryByText('file1.js')).toBeInTheDocument();
-        expect(withinCommitInfo().queryByText('file2.js')).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file1.js'))).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file2.js'))).toBeInTheDocument();
       });
 
       it('shows file actions on uncommitted changes in commit info view', () => {
@@ -154,24 +151,24 @@ describe('CommitInfoView', () => {
 
       it("doesn't show uncommitted changes on non-head commits ", () => {
         clickToSelectCommit('a');
-        expect(withinCommitInfo().queryByText('file1.js')).not.toBeInTheDocument();
-        expect(withinCommitInfo().queryByText('file2.js')).not.toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file1.js'))).not.toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file2.js'))).not.toBeInTheDocument();
       });
 
       it('shows files changed in the commit for head commit', () => {
-        expect(withinCommitInfo().queryByText('ca.js')).not.toBeInTheDocument();
-        expect(withinCommitInfo().queryByText('cb.js')).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('ca.js'))).not.toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('cb.js'))).toBeInTheDocument();
       });
 
       it('shows files changed in the commit for non-head commit', () => {
         clickToSelectCommit('a');
-        expect(withinCommitInfo().queryByText('ca.js')).toBeInTheDocument();
-        expect(withinCommitInfo().queryByText('cb.js')).not.toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('ca.js'))).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('cb.js'))).not.toBeInTheDocument();
       });
 
       it('enables amend button with uncommitted changes', () => {
-        expect(withinCommitInfo().queryByText('file1.js')).toBeInTheDocument();
-        expect(withinCommitInfo().queryByText('file2.js')).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file1.js'))).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file2.js'))).toBeInTheDocument();
 
         const amendButton: HTMLButtonElement | null = within(
           screen.getByTestId('commit-info-actions-bar'),
@@ -180,9 +177,40 @@ describe('CommitInfoView', () => {
         expect(amendButton?.disabled).not.toBe(true);
       });
 
+      it('does not show banner if all files are shown', () => {
+        expect(
+          withinCommitInfo().queryByText(/Showing first .* files out of .* total/),
+        ).not.toBeInTheDocument();
+      });
+
+      it('shows banner if not all files are shown', () => {
+        act(() => {
+          simulateCommits({
+            value: [
+              COMMIT('1', 'some public base', '0', {phase: 'public'}),
+              COMMIT('a', 'Head Commit', '1', {
+                isHead: true,
+                filesSample: new Array(25)
+                  .fill(null)
+                  .map((_, i) => ({path: `src/file${i}.txt`, status: 'M'})),
+                totalFileCount: 100,
+              }),
+            ],
+          });
+          simulateUncommittedChangedFiles({
+            value: [],
+          });
+        });
+
+        expect(withinCommitInfo().queryByText(ignoreRTL('file1.txt'))).toBeInTheDocument();
+        expect(
+          withinCommitInfo().queryByText('Showing first 25 files out of 100 total'),
+        ).toBeInTheDocument();
+      });
+
       it('runs amend with selected files', async () => {
-        expect(withinCommitInfo().queryByText('file1.js')).toBeInTheDocument();
-        expect(withinCommitInfo().queryByText('file2.js')).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file1.js'))).toBeInTheDocument();
+        expect(withinCommitInfo().queryByText(ignoreRTL('file2.js'))).toBeInTheDocument();
 
         act(() => {
           const checkboxes = withinCommitInfo()
@@ -205,6 +233,7 @@ describe('CommitInfoView', () => {
             type: 'runOperation',
             operation: {
               args: [
+                {type: 'config', key: 'amend.autorestack', value: 'always'},
                 'amend',
                 '--addremove',
                 {type: 'repo-relative-file', path: 'src/file2.js'},
@@ -237,7 +266,7 @@ describe('CommitInfoView', () => {
         expect(amendButton?.disabled).toBe(true);
       });
 
-      it('shows optimistic uncommitted changes', () => {
+      it('shows optimistic uncommitted changes', async () => {
         act(() => {
           simulateUncommittedChangedFiles({
             value: [],
@@ -246,12 +275,15 @@ describe('CommitInfoView', () => {
 
         expect(screen.queryByText('Amend and Submit')).not.toBeInTheDocument();
 
+        jest.spyOn(platform, 'confirm').mockImplementation(() => Promise.resolve(true));
         act(() => {
           fireEvent.click(screen.getByText('Uncommit'));
         });
 
-        expect(withinCommitInfo().queryByText('cb.js')).toBeInTheDocument();
-        expect(screen.queryByText('Amend and Submit')).toBeInTheDocument();
+        await waitFor(() => {
+          expect(withinCommitInfo().queryByText(ignoreRTL('cb.js'))).toBeInTheDocument();
+          expect(screen.queryByText('Amend and Submit')).toBeInTheDocument();
+        });
       });
     });
 
@@ -523,7 +555,7 @@ describe('CommitInfoView', () => {
                   args: [
                     'metaedit',
                     '--rev',
-                    SucceedableRevset('a'),
+                    succeedableRevset('a'),
                     '--message',
                     expect.stringMatching(
                       /^My Commit hello new title\n+Summary: First commit in the stack\nhello new text/,
@@ -585,6 +617,7 @@ describe('CommitInfoView', () => {
                 type: 'runOperation',
                 operation: {
                   args: [
+                    {type: 'config', key: 'amend.autorestack', value: 'always'},
                     'amend',
                     '--addremove',
                     '--message',
@@ -681,7 +714,7 @@ describe('CommitInfoView', () => {
             expect(amendMessageButton).toBeDisabled();
           });
 
-          it('shows amend message instead of amend when there are only message changes', async () => {
+          it('shows amend message instead of amend when there are only message changes', () => {
             act(() => {
               simulateUncommittedChangedFiles({
                 value: [{path: 'src/file1.js', status: 'M'}],
@@ -1111,14 +1144,12 @@ describe('CommitInfoView', () => {
           expect(withinCommitInfo().queryByText('You are here')).toBeInTheDocument();
         });
 
-        it('takes previews into account when rendering non-head commit', () => {
-          clickToSelectCommit('b'); // explicitly select, so we show even while goto runs
+        it('shows new head when running goto', () => {
+          clickToSelectCommit('b'); // explicitly select
           clickGotoCommit('a');
 
-          // we still show the other commit
-          expect(withinCommitInfo().queryByText('Head Commit')).toBeInTheDocument();
-          // but its not the head commit anymore, according to optimistic state
-          expect(withinCommitInfo().queryByText('You are here')).not.toBeInTheDocument();
+          expect(withinCommitInfo().queryByText('My Commit')).toBeInTheDocument();
+          expect(withinCommitInfo().queryByText('You are here')).toBeInTheDocument();
         });
 
         it('renders metaedit operation smoothly', async () => {

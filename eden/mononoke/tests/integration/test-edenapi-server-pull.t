@@ -29,7 +29,7 @@ Enable Segmented Changelog
   $ mononoke
   $ wait_for_mononoke
 
-Lazy clone the repo from mononoke 
+Lazy clone the repo from mononoke
   $ cd "$TESTTMP"
   $ setconfig remotenames.selectivepull=True remotenames.selectivepulldefault=master_bookmark
   $ setconfig pull.httpcommitgraph2=1 pull.httphashprefix=1
@@ -66,10 +66,8 @@ Make a new commit
   
 
 Move bookmark backwards
-  $ REPOID=0 mononoke_admin bookmarks set master_bookmark "$C"
-  * using repo "repo" repoid RepositoryId(0) (glob)
-  * changeset resolved as: ChangesetId(Blake2(c3384961b16276f2db77df9d7c874bbe981cf0525bd6f84a502f919044f2dabd)) (glob)
-  * Current position of * bookmark: "master_bookmark" * is Some(ChangesetId(Blake2(830c5dcdb5335a4ecdda15afc927edd525c26d0a3d7f14c93ef5ecc48d0db532))) (glob)
+  $ mononoke_newadmin bookmarks --repo-id=0 set master_bookmark "$C"
+  Updating publishing bookmark master_bookmark from 830c5dcdb5335a4ecdda15afc927edd525c26d0a3d7f14c93ef5ecc48d0db532 to c3384961b16276f2db77df9d7c874bbe981cf0525bd6f84a502f919044f2dabd
 
 Restart mononoke, this way we drop in-memory segmented changelog representations.
   $ killandwait $MONONOKE_PID
@@ -80,11 +78,11 @@ Check that bookmark moved correctly
   {"master": None,
    "master_bookmark": "26805aba1e600a82e93661149f2313866a221a7b"}
 
-  $ merge_tunables <<EOF
+  $ merge_just_knobs <<EOF
   > {
-  >   "ints": {
-  >     "segmented_changelog_client_max_commits_to_traverse": 100
-  >   }
+  >    "ints": {
+  >      "scm/mononoke:segmented_changelog_client_max_commits_to_traverse": 100
+  >    }
   > }
   > EOF
 
@@ -94,7 +92,7 @@ Pull should succeed and local bookmark should be moved back.
   DEBUG pull::fastpath: master_bookmark: c2f72b3cb5e9ea5ce6b764fc5b4f7c7b23208217 => 26805aba1e600a82e93661149f2313866a221a7b
   imported commit graph for 0 commits (0 segments)
 
-Check that segmented changelog IdMap in DB didn't change. 
+Check that segmented changelog IdMap in DB didn't change.
   $ sqlite3 "$TESTTMP/monsql/sqlite_dbs" "select version, vertex, hex(cs_id) from segmented_changelog_idmap"
   1|0|9FEB8DDD3E8EDDCFA3A4913B57DF7842BEDF84B8EA3B7B3FCB14C6424AA81FEC
   1|1|459F16AE564C501CB408C1E5B60FC98A1E8B8E97B9409C7520658BFA1577FB66

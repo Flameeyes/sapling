@@ -6,7 +6,7 @@
  */
 
 import type execa from 'execa';
-import type {ExecaChildProcess} from 'execa';
+import type {ExecaChildProcess, ExecaError} from 'execa';
 import type {CommitInfo, SmartlogCommits} from 'isl/src/types';
 
 import os from 'os';
@@ -130,7 +130,7 @@ export function findPublicAncestor(
  * Return a JSON object. On error, the JSON object has property "error".
  */
 export function parseExecJson<T>(
-  exec: execa.ExecaChildProcess,
+  exec: Promise<execa.ExecaReturnValue<string>>,
   reply: (parsed?: T, error?: string) => void,
 ) {
   exec
@@ -163,4 +163,8 @@ export function parseExecJson<T>(
       const msg = `Cannot run ${truncate(err.escapedCommand)}. (error: ${err})`;
       reply(undefined, msg);
     });
+}
+
+export function isExecaError(s: unknown): s is ExecaError & {code?: string} {
+  return s != null && typeof s === 'object' && 'exitCode' in s;
 }

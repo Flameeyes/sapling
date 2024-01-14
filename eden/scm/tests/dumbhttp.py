@@ -8,7 +8,7 @@ import signal
 import socket
 import sys
 
-from edenscm import server, util
+from sapling import server, util
 
 
 """
@@ -34,7 +34,7 @@ class _httprequesthandler(httpserver.simplehttprequesthandler):
         sys.stderr.flush()
 
 
-class simplehttpservice(object):
+class simplehttpservice:
     def __init__(self, host, port):
         self.address = (host, port)
 

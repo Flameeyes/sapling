@@ -6,6 +6,7 @@
  */
 
 import App from '../App';
+import {CommitInfoTestUtils, ignoreRTL} from '../testQueries';
 import {
   resetTestMessages,
   expectMessageSentToServer,
@@ -14,9 +15,10 @@ import {
   simulateUncommittedChangedFiles,
   closeCommitInfoSidebar,
   simulateRepoConnected,
+  commitInfoIsOpen,
 } from '../testUtils';
 import {CommandRunner} from '../types';
-import {fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import {act} from 'react-dom/test-utils';
 
 jest.mock('../MessageBus');
@@ -97,11 +99,13 @@ describe('CommitTreeList', () => {
       });
 
       it('renders uncommitted changes', () => {
-        expect(screen.getByText('file.js', {exact: false})).toBeInTheDocument();
-        expect(screen.getByText('file_add.js', {exact: false})).toBeInTheDocument();
-        expect(screen.getByText('file_removed.js', {exact: false})).toBeInTheDocument();
-        expect(screen.getByText('file_untracked.js', {exact: false})).toBeInTheDocument();
-        expect(screen.getByText('file_missing.js', {exact: false})).toBeInTheDocument();
+        expect(screen.getByText(ignoreRTL('file.js'), {exact: false})).toBeInTheDocument();
+        expect(screen.getByText(ignoreRTL('file_add.js'), {exact: false})).toBeInTheDocument();
+        expect(screen.getByText(ignoreRTL('file_removed.js'), {exact: false})).toBeInTheDocument();
+        expect(
+          screen.getByText(ignoreRTL('file_untracked.js'), {exact: false}),
+        ).toBeInTheDocument();
+        expect(screen.getByText(ignoreRTL('file_missing.js'), {exact: false})).toBeInTheDocument();
       });
 
       it('shows quick commit button', () => {
@@ -221,9 +225,13 @@ describe('CommitTreeList', () => {
           const ignoredFileCheckboxes = document.querySelectorAll(
             '.changed-files .changed-file.file-ignored input[type="checkbox"]',
           );
-          expect(ignoredFileCheckboxes).toHaveLength(2); // file_untracked.js and file_missing.js
+          const missingFileCheckboxes = document.querySelectorAll(
+            '.changed-files .changed-file.file-missing input[type="checkbox"]',
+          );
+          expect(ignoredFileCheckboxes).toHaveLength(1); // file_untracked.js
+          expect(missingFileCheckboxes).toHaveLength(1); // file_missing.js
           act(() => {
-            fireEvent.click(ignoredFileCheckboxes[0]);
+            fireEvent.click(missingFileCheckboxes[0]);
           });
 
           const addremove = screen.getByTestId('addremove-button');
@@ -282,6 +290,34 @@ describe('CommitTreeList', () => {
         });
       });
       expect(screen.getByText('Landed as a newer commit', {exact: false})).toBeInTheDocument();
+    });
+
+    it('shows button to open sidebar', () => {
+      act(() => {
+        simulateCommits({
+          value: [
+            COMMIT('1', 'some public base', '0', {phase: 'public'}),
+            COMMIT('a', 'Commit A', '1', {isHead: true}),
+            COMMIT('b', 'Commit B', '1'),
+          ],
+        });
+      });
+      expect(commitInfoIsOpen()).toBeFalsy();
+
+      // doesn't appear for public commits
+      expect(
+        within(screen.getByTestId('commit-1')).queryByTestId('open-commit-info-button'),
+      ).not.toBeInTheDocument();
+
+      const openButton = within(screen.getByTestId('commit-b')).getByTestId(
+        'open-commit-info-button',
+      );
+      expect(openButton).toBeInTheDocument();
+      // screen reader accessible
+      expect(screen.getByLabelText('Open commit "Commit B"')).toBeInTheDocument();
+      fireEvent.click(openButton);
+      expect(commitInfoIsOpen()).toBeTruthy();
+      expect(CommitInfoTestUtils.withinCommitInfo().getByText('Commit B')).toBeInTheDocument();
     });
   });
 });

@@ -54,6 +54,12 @@ use multiplexedblob_wal::WalMultiplexedBlobstore;
 use packblob::PackBlob;
 use packblob::PackOptions;
 use readonlyblob::ReadOnlyBlobstore;
+#[cfg(fbcode_build)]
+use s3blob::awss3client::AwsS3ClientPool;
+#[cfg(fbcode_build)]
+use s3blob::s3client::S3ClientPool;
+#[cfg(fbcode_build)]
+use s3blob::store::S3Blob;
 use samplingblob::ComponentSamplingHandler;
 use samplingblob::SamplingBlobstoreUnlinkOps;
 use scuba_ext::MononokeScubaSampleBuilder;
@@ -549,21 +555,22 @@ pub fn make_blobstore_unlink_ops<'a>(
             } => {
                 #[cfg(fbcode_build)]
                 {
-                    ::s3blob::S3Blob::new(
+                    let client_backend = S3ClientPool::new(
                         fb,
-                        bucket,
                         keychain_group,
                         secret_name,
                         region_name,
                         endpoint,
-                        blobstore_options.put_behaviour,
                         logger,
                         num_concurrent_operations,
                     )
-                    .watched(logger)
-                    .await
-                    .context(ErrorKind::StateOpen)
-                    .map(|store| Arc::new(store) as Arc<dyn BlobstoreUnlinkOps>)?
+                    .await?;
+
+                    S3Blob::new(bucket, client_backend, blobstore_options.put_behaviour)
+                        .watched(logger)
+                        .await
+                        .context(ErrorKind::StateOpen)
+                        .map(|store| Arc::new(store) as Arc<dyn BlobstoreUnlinkOps>)?
                 }
                 #[cfg(not(fbcode_build))]
                 {
@@ -573,6 +580,42 @@ pub fn make_blobstore_unlink_ops<'a>(
                         secret_name,
                         region_name,
                         endpoint,
+                        num_concurrent_operations,
+                    );
+                    unimplemented!("This is implemented only for fbcode_build")
+                }
+            }
+            AwsS3 {
+                aws_account_id,
+                aws_role,
+                bucket,
+                region,
+                num_concurrent_operations,
+            } => {
+                #[cfg(fbcode_build)]
+                {
+                    let client_backend = AwsS3ClientPool::new(
+                        fb,
+                        aws_account_id,
+                        aws_role,
+                        region,
+                        num_concurrent_operations,
+                    )
+                    .await?;
+
+                    S3Blob::new(bucket, client_backend, blobstore_options.put_behaviour)
+                        .watched(logger)
+                        .await
+                        .context(ErrorKind::StateOpen)
+                        .map(|store| Arc::new(store) as Arc<dyn BlobstoreUnlinkOps>)?
+                }
+                #[cfg(not(fbcode_build))]
+                {
+                    let _ = (
+                        aws_account_id,
+                        aws_role,
+                        bucket,
+                        region,
                         num_concurrent_operations,
                     );
                     unimplemented!("This is implemented only for fbcode_build")
