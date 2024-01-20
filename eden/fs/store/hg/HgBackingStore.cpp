@@ -32,9 +32,7 @@
 #include "eden/fs/store/SerializedBlobMetadata.h"
 #include "eden/fs/store/StoreResult.h"
 #include "eden/fs/store/hg/HgDatapackStore.h"
-#include "eden/fs/store/hg/HgImportPyError.h"
 #include "eden/fs/store/hg/HgImportRequest.h"
-#include "eden/fs/store/hg/HgImporter.h"
 #include "eden/fs/store/hg/HgProxyHash.h"
 #include "eden/fs/telemetry/EdenStats.h"
 #include "eden/fs/telemetry/LogEvent.h"
@@ -72,70 +70,26 @@ DEFINE_bool(
 namespace facebook::eden {
 
 namespace {
-// Thread local HgImporter. This is only initialized on HgImporter threads.
-static folly::ThreadLocalPtr<Importer> threadLocalImporter;
-
-/**
- * Checks that the thread local HgImporter is present and returns it.
- */
-Importer& getThreadLocalImporter() {
-  if (!threadLocalImporter) {
-    EDEN_BUG() << "Attempting to get HgImporter from non-HgImporter thread";
-  }
-  return *threadLocalImporter;
-}
-
 ObjectId hashFromRootId(const RootId& root) {
   return ObjectId::fromHex(root.value());
 }
 
 /**
  * Thread factory that sets thread name and initializes a thread local
- * HgImporter.
+ * Sapling retry state.
  */
-class HgImporterThreadFactory : public folly::InitThreadFactory {
+class SaplingRetryThreadFactory : public folly::InitThreadFactory {
  public:
-  HgImporterThreadFactory(
+  SaplingRetryThreadFactory(
       AbsolutePathPiece repository,
       EdenStatsPtr stats,
       std::shared_ptr<StructuredLogger> logger)
       : folly::InitThreadFactory(
-            std::make_shared<folly::NamedThreadFactory>("HgImporter"),
+            std::make_shared<folly::NamedThreadFactory>("SaplingRetry"),
             [repository = AbsolutePath{repository},
              stats = std::move(stats),
-             logger] {
-              threadLocalImporter.reset(
-                  new HgImporterManager(repository, stats.copy(), logger));
-            },
-            [] {
-              if (folly::kIsWindows) {
-                // TODO(T125334969): On Windows, the ThreadLocalPtr doesn't
-                // appear to release its resources when the thread dies, so
-                // let's do it manually here.
-                threadLocalImporter.reset();
-              }
-            }) {}
-};
-
-/**
- * An inline executor that, while it exists, keeps a thread-local HgImporter
- * instance.
- */
-class HgImporterTestExecutor : public folly::InlineExecutor {
- public:
-  explicit HgImporterTestExecutor(Importer* importer) : importer_{importer} {}
-
-  void add(folly::Func f) override {
-    // This is an InlineExecutor, so we may run on an arbitrary thread.
-    threadLocalImporter.reset(importer_);
-    SCOPE_EXIT {
-      threadLocalImporter.release();
-    };
-    folly::InlineExecutor::add(std::move(f));
-  }
-
- private:
-  Importer* importer_;
+             logger] {},
+            [] {}) {}
 };
 
 HgDatapackStore::Options computeOptions() {
@@ -162,23 +116,23 @@ HgBackingStore::HgBackingStore(
     FaultInjector* FOLLY_NONNULL faultInjector)
     : localStore_(std::move(localStore)),
       stats_(stats.copy()),
-      importThreadPool_(make_unique<folly::CPUThreadPoolExecutor>(
+      retryThreadPool_(make_unique<folly::CPUThreadPoolExecutor>(
           FLAGS_num_hg_import_threads,
           /* Eden performance will degrade when, for example, a status operation
            * causes a large number of import requests to be scheduled before a
            * lightweight operation needs to check the RocksDB cache. In that
            * case, the RocksDB threads can end up all busy inserting work into
-           * the importer queue, preventing future requests that would hit cache
+           * the retry queue, preventing future requests that would hit cache
            * from succeeding.
            *
-           * Thus, make the import queue unbounded.
+           * Thus, make the retry queue unbounded.
            *
            * In the long term, we'll want a more comprehensive approach to
            * bounding the parallelism of scheduled work.
            */
           make_unique<folly::UnboundedBlockingQueue<
               folly::CPUThreadPoolExecutor::CPUTask>>(),
-          std::make_shared<HgImporterThreadFactory>(
+          std::make_shared<SaplingRetryThreadFactory>(
               repository,
               stats.copy(),
               logger))),
@@ -199,16 +153,15 @@ HgBackingStore::HgBackingStore(
  */
 HgBackingStore::HgBackingStore(
     AbsolutePathPiece repository,
-    HgImporter* importer,
     std::shared_ptr<ReloadableConfig> config,
     std::shared_ptr<LocalStore> localStore,
     EdenStatsPtr stats,
     FaultInjector* FOLLY_NONNULL faultInjector)
     : localStore_{std::move(localStore)},
       stats_{std::move(stats)},
-      importThreadPool_{std::make_unique<HgImporterTestExecutor>(importer)},
+      retryThreadPool_{std::make_unique<folly::InlineExecutor>()},
       config_(std::move(config)),
-      serverThreadPool_{importThreadPool_.get()},
+      serverThreadPool_{retryThreadPool_.get()},
       logger_(nullptr),
       datapackStore_(
           repository,
@@ -306,21 +259,20 @@ folly::Future<TreePtr> HgBackingStore::fetchTreeFromImporter(
     RelativePath path,
     std::shared_ptr<LocalStore::WriteBatch> writeBatch) {
   return folly::via(
-             importThreadPool_.get(),
+             retryThreadPool_.get(),
              [this,
               path,
               manifestNode,
               edenTreeID,
               writeBatch,
               &liveImportTreeWatches = liveImportTreeWatches_] {
-               Importer& importer = getThreadLocalImporter();
                folly::stop_watch<std::chrono::milliseconds> watch;
                RequestMetricsScope queueTracker{&liveImportTreeWatches};
 
                // NOTE: In the future we plan to update
                // SaplingNativeBackingStore (and HgDatapackStore) to provide and
                // asynchronous interface enabling us to perform our retries
-               // there. In the meantime we use importThreadPool_ for these
+               // there. In the meantime we use retryThreadPool_ for these
                // longer-running retry requests to avoid starving
                // serverThreadPool_.
 
@@ -335,27 +287,11 @@ folly::Future<TreePtr> HgBackingStore::fetchTreeFromImporter(
                if (tree.hasValue()) {
                  stats_->increment(&HgBackingStoreStats::fetchTreeRetrySuccess);
                  result = tree.value();
-               } else if (config_->getEdenConfig()
-                              ->hgImporterFetchFallback.getValue()) {
-                 // Fall back to importer
-                 auto serializedTree = importer.fetchTree(path, manifestNode);
-                 if (serializedTree) {
-                   stats_->increment(&HgBackingStoreStats::importTreeSuccess);
-                 } else {
-                   stats_->increment(&HgBackingStoreStats::importTreeFailure);
-                 }
-                 result = processTree(
-                     std::move(serializedTree),
-                     manifestNode,
-                     edenTreeID,
-                     path,
-                     writeBatch.get());
                } else {
-                 // No fallback to importer, record miss and return error
+                 // Record miss and return error
                  if (logger_) {
                    logger_->logEvent(FetchMiss{
                        datapackStore_.getRepoName(),
-                       FetchMiss::BackingStore,
                        FetchMiss::Tree,
                        tree.exception().what().toStdString(),
                        true});
@@ -484,37 +420,6 @@ class Manifest {
 
 } // namespace
 
-TreePtr HgBackingStore::processTree(
-    std::unique_ptr<IOBuf> content,
-    const Hash20& manifestNode,
-    const ObjectId& edenTreeID,
-    RelativePathPiece path,
-    LocalStore::WriteBatch* writeBatch) {
-  auto manifest = Manifest(std::move(content));
-  Tree::container entries{kPathMapDefaultCaseSensitive};
-  auto hgObjectIdFormat = config_->getEdenConfig()->hgObjectIdFormat.getValue();
-  const auto filteredPaths =
-      config_->getEdenConfig()->hgFilteredPaths.getValue();
-
-  for (auto& entry : manifest) {
-    XLOG(DBG9) << "tree: " << manifestNode << " " << entry.name
-               << " node: " << entry.node << " flag: " << entry.type;
-
-    auto relPath = path + entry.name;
-    if (filteredPaths->count(relPath) == 0) {
-      auto proxyHash =
-          HgProxyHash::store(relPath, entry.node, hgObjectIdFormat);
-
-      entries.emplace(entry.name, proxyHash, entry.type);
-    }
-  }
-
-  writeBatch->flush();
-
-  return std::make_shared<TreePtr::element_type>(
-      std::move(entries), edenTreeID);
-}
-
 ImmediateFuture<folly::Unit> HgBackingStore::importTreeManifestForRoot(
     const RootId& rootId,
     const Hash20& manifestId,
@@ -604,7 +509,7 @@ folly::Future<TreePtr> HgBackingStore::importTreeManifestImpl(
 SemiFuture<BlobPtr> HgBackingStore::fetchBlobFromHgImporter(
     HgProxyHash hgInfo) {
   return folly::via(
-             importThreadPool_.get(),
+             retryThreadPool_.get(),
              [this,
               hgInfo = std::move(hgInfo),
               &liveImportBlobWatches = liveImportBlobWatches_] {
@@ -614,7 +519,7 @@ SemiFuture<BlobPtr> HgBackingStore::fetchBlobFromHgImporter(
                // NOTE: In the future we plan to update
                // SaplingNativeBackingStore (and HgDatapackStore) to provide and
                // asynchronous interface enabling us to perform our retries
-               // there. In the meantime we use importThreadPool_ for these
+               // there. In the meantime we use retryThreadPool_ for these
                // longer-running retry requests to avoid starving
                // serverThreadPool_.
 
@@ -628,24 +533,11 @@ SemiFuture<BlobPtr> HgBackingStore::fetchBlobFromHgImporter(
                if (blob.hasValue()) {
                  stats_->increment(&HgBackingStoreStats::fetchBlobRetrySuccess);
                  result = blob.value();
-               } else if (config_->getEdenConfig()
-                              ->hgImporterFetchFallback.getValue()) {
-                 // Fall back to importer
-                 Importer& importer = getThreadLocalImporter();
-                 result = importer.importFileContents(
-                     hgInfo.path(), hgInfo.revHash());
-
-                 if (result.hasValue()) {
-                   stats_->increment(&HgBackingStoreStats::importBlobSuccess);
-                 } else {
-                   stats_->increment(&HgBackingStoreStats::importBlobFailure);
-                 }
                } else {
-                 // No fallback to importer, record miss and return error
+                 // Record miss and return error
                  if (logger_) {
                    logger_->logEvent(FetchMiss{
                        datapackStore_.getRepoName(),
-                       FetchMiss::BackingStore,
                        FetchMiss::Blob,
                        blob.exception().what().toStdString(),
                        true});

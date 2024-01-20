@@ -554,7 +554,6 @@ if interactiveui is not None:
                 props={"highlighted_node": self.revdag[self.dag_index][2].hex()},
                 on_output=on_output,
             )
-            ui.status(self.status)
             output = ui.popbuffer().splitlines()
             if selected_rows is None:
                 return output, None
@@ -563,10 +562,10 @@ if interactiveui is not None:
         def handlekeypress(self, key):
             if key == self.KEY_Q:
                 self.finish()
-            if key == self.KEY_J:
+            if key == self.KEY_J or key == self.KEY_DOWN:
                 if self.dag_index < len(self.revdag) - 1:
                     self.dag_index += 1
-            if key == self.KEY_K:
+            if key == self.KEY_K or key == self.KEY_UP:
                 if self.dag_index > 0:
                     self.dag_index -= 1
             if key == self.KEY_RETURN:
@@ -619,10 +618,24 @@ def _smartlog(ui, repo, *pats, **opts):
         if interactiveui is None:
             raise error.Abort(_("interactive ui is not supported on Windows"))
 
-        ui.write_err(_("warning: interactive mode is WIP\n"))
-
         viewobj = interactivesmartlog(ui, repo, masterstring, headrevs, template, opts)
-        interactiveui.view(viewobj)
+        if util.istest():
+            input_str = ui.fin.readline()
+            index = 0
+
+            def getchar():
+                nonlocal input_str
+                nonlocal index
+                # Automatically quit at end of input
+                if index >= len(input_str):
+                    return b"q"
+                ch = input_str[index]
+                index += 1
+                return ch
+
+            interactiveui.view(viewobj, getchar)
+        else:
+            interactiveui.view(viewobj)
         return
 
     revs = getrevs(ui, repo, masterstring, headrevs)

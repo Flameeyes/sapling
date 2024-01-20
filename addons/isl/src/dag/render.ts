@@ -7,6 +7,8 @@
 
 import type {Hash} from '../types';
 
+import {assert} from '../utils';
+
 /* eslint no-bitwise: 0 */
 /* Translated from fbcode/eden/scm/lib/renderdag/src/render.rs */
 
@@ -125,6 +127,16 @@ class Columns {
     const columns = this.inner;
     columns.push(Column.empty());
     return columns.length - 1;
+  }
+
+  convertAncestorToParent() {
+    const columns = this.inner;
+    for (let i = 0; i < columns.length; i++) {
+      const {type, hash} = columns[i];
+      if (type === ColumnType.Ancestor && hash != null) {
+        columns[i] = new Column({type: ColumnType.Parent, hash});
+      }
+    }
   }
 
   reset(): void {
@@ -345,34 +357,125 @@ export enum PadLine {
   Parent,
 }
 
+type GraphRow = {
+  hash: Hash;
+  merge: boolean;
+  /** The node ("o") columns for this row. */
+  nodeLine: Array<NodeLine>;
+  /** The link columns for this row if necessary. Cannot be repeated. */
+  linkLine?: Array<LinkLine>;
+  /**
+   * The location of any terminators, if necessary.
+   * Between postNode and ancestryLines.
+   */
+  termLine?: Array<boolean>;
+  /**
+   * Lines to represent "ancestory" relationship.
+   * "|" for direct parent, ":" for indirect ancestor.
+   * Can be repeated. Can be skipped if there are no indirect ancestors.
+   * Practically, CLI repeats this line. ISL "repeats" preNode and postNode lines.
+   */
+  ancestryLine: Array<PadLine>;
+
+  /** True if the node is a head (no children, uses a new column) */
+  isHead: boolean;
+  /** True if the node is a root (no parents) */
+  isRoot: boolean;
+
+  /**
+   * Column that contains the "node" above the link line.
+   * nodeLine[nodeColumn] should be NodeLine.Node.
+   */
+  nodeColumn: number;
+
+  /**
+   * Parent columns reachable from "node" below the link line.
+   */
+  parentColumns: number[];
+
+  /**
+   * A subset of LinkLine that comes from "node". For example:
+   *
+   *   │ o   // node line
+   *   ├─╯   // link line
+   *
+   * The `fromNodeValue` LinkLine looks like:
+   *
+   *   ╭─╯
+   *
+   * Note "├" is changed to "╭".
+   */
+  linkLineFromNode?: Array<LinkLine>;
+};
+
 /**
  * Output row for a "commit".
  *
  * Example line types:
  *
  * ```plain
- *   o      F                     // node line
- *   ├─┬─╮  very long message 1   // link line
- *   │ │ │  very long message 2   // term line
- *   │ │ ~  very long message 3   // term line
- *   │ │                          // pad line
- *   │ │    very long message 4   // pad line
+ *   │                            // preNodeLine (repeatable)
+ *   │                            // preNodeLine
+ *   o      F                     // nodeLine
+ *   │      very long message 0   // postNodeLine (repeatable)
+ *   │      very long message 0   // postNodeLine
+ *   ├─┬─╮  very long message 1   // linkLine
+ *   │ │ ~  very long message 2   // termLine
+ *   : │    very long message 3   // ancestryLine
+ *   │ │    very long message 4   // postAncestryLine (repeatable)
+ *   │ │    very long message 5   // postAncestryLine
  * ```
+ *
+ * This is `GraphRow` with derived fields.
  */
-export type GraphRow = {
-  hash: Hash;
-  merge: boolean;
-  /**  The node columns for this row */
-  nodeLine: Array<NodeLine>;
-  /** The link columns for this row, if a link row is necessary */
-  linkLine?: Array<LinkLine>;
+export type ExtendedGraphRow = GraphRow & {
+  /** If there are indirect ancestors, aka. the ancestryLine is interesting to render. */
+  hasIndirectAncestor: boolean;
+  /** The columns before the node columns. Repeatable. */
+  preNodeLine: Array<PadLine>;
+  /** The columns after node, before the term, link columns. Repeatable. */
+  postNodeLine: Array<PadLine>;
+  /** The columns after ancestryLine. Repeatable. */
+  postAncestryLine: Array<PadLine>;
+};
+
+function nodeToPadLine(node: NodeLine, useBlank: boolean): PadLine {
+  switch (node) {
+    case NodeLine.Blank:
+      return PadLine.Blank;
+    case NodeLine.Ancestor:
+      return PadLine.Ancestor;
+    case NodeLine.Parent:
+      return PadLine.Parent;
+    case NodeLine.Node:
+      return useBlank ? PadLine.Blank : PadLine.Parent;
+  }
+}
+
+function extendGraphRow(row: GraphRow): ExtendedGraphRow {
+  return {
+    ...row,
+    get hasIndirectAncestor() {
+      return row.ancestryLine.some(line => line === PadLine.Ancestor);
+    },
+    get preNodeLine() {
+      return row.nodeLine.map(l => nodeToPadLine(l, row.isHead));
+    },
+    get postNodeLine() {
+      return row.nodeLine.map(l => nodeToPadLine(l, row.isRoot));
+    },
+    get postAncestryLine() {
+      return row.ancestryLine.map(l => (l === PadLine.Ancestor ? PadLine.Parent : l));
+    },
+  };
+}
+
+type NextRowOptions = {
   /**
-   * The location of any terminators, if necessary.  Other columns should be
-   * filled with pad lines.
+   * Ensure this node uses the last (right-most) column.
+   * Only works for heads, i.e. nodes without children.
    */
-  termLine?: Array<boolean>;
-  /** Pad columns */
-  padLines: Array<PadLine>;
+  forceLastColumn?: boolean;
 };
 
 export class Renderer {
@@ -399,10 +502,25 @@ export class Renderer {
    * Render the next row.
    * Main logic of the renderer.
    */
-  nextRow(hash: Hash, parents: Array<Ancestor>): GraphRow {
+  nextRow(hash: Hash, parents: Array<Ancestor>, opts?: NextRowOptions): ExtendedGraphRow {
+    const {forceLastColumn = false} = opts ?? {};
+
     // Find a column for this node.
-    const column: number =
-      this.columns.find(hash) ?? this.columns.firstEmpty() ?? this.columns.newEmpty();
+    const existingColumn = this.columns.find(hash);
+    let column: number;
+    if (forceLastColumn) {
+      assert(
+        existingColumn == null,
+        'requireLastColumn should only apply to heads (ex. "You are here")',
+      );
+      column = this.columns.newEmpty();
+    } else {
+      column = existingColumn ?? this.columns.firstEmpty() ?? this.columns.newEmpty();
+    }
+    const isHead =
+      existingColumn == null || this.columns.inner.at(existingColumn)?.type === ColumnType.Reserved;
+    const isRoot = parents.length === 0;
+
     this.columns.inner[column] = Column.empty();
 
     // This row is for a merge if there are multiple parents.
@@ -414,14 +532,27 @@ export class Renderer {
 
     // Build the initial link line.
     const linkLine: LinkLine[] = this.columns.inner.map(c => c.toLinkLine());
+    const linkLineFromNode: LinkLine[] = this.columns.inner.map(_c => LinkLine.empty());
+    linkLineFromNode[column] = linkLine[column];
     let needLinkLine = false;
+
+    // Update linkLine[i] and linkLineFromNode[i] to include `bits`.
+    const linkBoth = (i: number, bits: number) => {
+      if (bits < 0) {
+        linkLine[i] = LinkLine.from(bits);
+        linkLineFromNode[i] = LinkLine.from(bits);
+      } else {
+        linkLine[i] = linkLine[i].or(bits);
+        linkLineFromNode[i] = linkLineFromNode[i].or(bits);
+      }
+    };
 
     // Build the initial term line.
     const termLine: boolean[] = this.columns.inner.map(_c => false);
     let needTermLine = false;
 
-    // Build the initial pad line.
-    const padLines: PadLine[] = this.columns.inner.map(c => c.toPadLine());
+    // Build the initial ancestry line.
+    const ancestryLine: PadLine[] = this.columns.inner.map(c => c.toPadLine());
 
     // Assign each parent to a column.
     const parentColumns = new Map<number, Ancestor>();
@@ -449,8 +580,9 @@ export class Renderer {
       // There are no empty columns left. Make a new column.
       parentColumns.set(this.columns.inner.length, p);
       nodeLine.push(NodeLine.Blank);
-      padLines.push(PadLine.Blank);
+      ancestryLine.push(PadLine.Blank);
       linkLine.push(LinkLine.empty());
+      linkLineFromNode.push(LinkLine.empty());
       termLine.push(false);
       this.columns.inner.push(p.toColumn());
     }
@@ -464,6 +596,31 @@ export class Renderer {
     }
 
     // Check if we can move the parent to the current column.
+    //
+    //   Before             After
+    //   ├─╮                ├─╮
+    //   │ o  C             │ o  C
+    //   o ╷  B             o ╷  B
+    //   ╰─╮                ├─╯
+    //     o  A             o  A
+    //
+    //   o      J           o      J
+    //   ├─┬─╮              ├─┬─╮
+    //   │ │ o  I           │ │ o  I
+    //   │ o │      H       │ o │      H
+    //   ╭─┼─┬─┬─╮          ╭─┼─┬─┬─╮
+    //   │ │ │ │ o  G       │ │ │ │ o  G
+    //   │ │ │ o │  E       │ │ │ o │  E
+    //   │ │ │ ╰─┤          │ │ │ ├─╯
+    //   │ │ o   │  D       │ │ o │  D
+    //   │ │ ├───╮          │ │ ├─╮
+    //   │ o │   │  C       │ o │ │  C
+    //   │ ╰─────┤          │ ├───╯
+    //   o   │   │  F       o │ │  F
+    //   ╰───────┤          ├─╯ │
+    //       │   o  B       o   │  B
+    //       ├───╯          ├───╯
+    //       o  A           o  A
     if (parents.length === 1) {
       const [[parentColumn, parentAncestor]] = parentColumns.entries();
       if (parentColumn != null && parentColumn > column) {
@@ -476,6 +633,12 @@ export class Renderer {
         // Generate a line from this column to the old
         // parent column.   We need to continue with the style
         // that was being used for the parent column.
+        //
+        //          old parent
+        //     o    v
+        //     ╭────╯
+        //     ^
+        //     new parent (moved here, nodeColumn)
         const wasDirect = linkLine.at(parentColumn)?.contains(LinkLine.VERT_PARENT);
         linkLine[column] = linkLine[column].or(
           wasDirect ? LinkLine.RIGHT_FORK_PARENT : LinkLine.RIGHT_FORK_ANCESTOR,
@@ -487,8 +650,8 @@ export class Renderer {
           wasDirect ? LinkLine.LEFT_MERGE_PARENT : LinkLine.LEFT_MERGE_ANCESTOR,
         );
         needLinkLine = true;
-        // The pad line for the old parent column is now blank.
-        padLines[parentColumn] = PadLine.Blank;
+        // The ancestry line for the old parent column is now blank.
+        ancestryLine[parentColumn] = PadLine.Blank;
       }
     }
 
@@ -498,29 +661,29 @@ export class Renderer {
       // If the parents extend beyond the columns adjacent to the node, draw a horizontal
       // ancestor line between the two outermost ancestors.
       for (const i of bounds.range()) {
-        linkLine[i] = linkLine[i].or(bounds.horizontalLine(i).value);
+        linkBoth(i, bounds.horizontalLine(i).value);
         needLinkLine = true;
       }
       // If there is a parent or ancestor to the right of the node
       // column, the node merges from the right.
       if (bounds.maxParent > column) {
-        linkLine[column] = linkLine[column].or(LinkLine.RIGHT_MERGE_PARENT);
+        linkBoth(column, LinkLine.RIGHT_MERGE_PARENT);
         needLinkLine = true;
       } else if (bounds.maxAncestor > column) {
-        linkLine[column] = linkLine[column].or(LinkLine.RIGHT_MERGE_ANCESTOR);
+        linkBoth(column, LinkLine.RIGHT_MERGE_ANCESTOR);
         needLinkLine = true;
       }
       // If there is a parent or ancestor to the left of the node column, the node merges from the left.
       if (bounds.minParent < column) {
-        linkLine[column] = linkLine[column].or(LinkLine.LEFT_MERGE_PARENT);
+        linkBoth(column, LinkLine.LEFT_MERGE_PARENT);
         needLinkLine = true;
       } else if (bounds.minAncestor < column) {
-        linkLine[column] = linkLine[column].or(LinkLine.LEFT_MERGE_ANCESTOR);
+        linkBoth(column, LinkLine.LEFT_MERGE_ANCESTOR);
         needLinkLine = true;
       }
       // Each parent or ancestor forks towards the node column.
       for (const [i, p] of parentColumns.entries()) {
-        padLines[i] = this.columns.inner[i].toPadLine();
+        ancestryLine[i] = this.columns.inner[i].toPadLine();
         let orValue = 0;
         if (i < column) {
           orValue = p.toLinkLine(
@@ -538,9 +701,12 @@ export class Renderer {
             LinkLine.from(LinkLine.LEFT_FORK_ANCESTOR),
           ).value;
         }
-        linkLine[i] = linkLine[i].or(orValue);
+        linkBoth(i, orValue);
       }
     }
+
+    // Only show ":" once per branch.
+    this.columns.convertAncestorToParent();
 
     // Now that we have assigned all the columns, reset their state.
     this.columns.reset();
@@ -549,13 +715,20 @@ export class Renderer {
     const optionalLinkLine = needLinkLine ? linkLine : undefined;
     const optionalTermLine = needTermLine ? termLine : undefined;
 
-    return {
+    const row: GraphRow = {
       hash,
       merge,
       nodeLine,
       linkLine: optionalLinkLine,
       termLine: optionalTermLine,
-      padLines,
+      ancestryLine,
+      isHead,
+      isRoot,
+      nodeColumn: column,
+      parentColumns: [...parentColumns.keys()].sort((a, b) => a - b),
+      linkLineFromNode: needLinkLine ? linkLineFromNode : undefined,
     };
+
+    return extendGraphRow(row);
   }
 }

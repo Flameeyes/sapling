@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import type {DagCommitInfo} from './dag/dag';
 import type {CommitInfo, SuccessorInfo} from './types';
 import type {Snapshot} from 'recoil';
 import type {ContextMenuItem} from 'shared/ContextMenu';
@@ -12,7 +13,7 @@ import type {ContextMenuItem} from 'shared/ContextMenu';
 import {globalRecoil} from './AccessGlobalRecoil';
 import {Avatar} from './Avatar';
 import {BranchIndicator} from './BranchIndicator';
-import {hasUnsavedEditedCommitMessage} from './CommitInfoView/CommitInfoState';
+import {commitMode, hasUnsavedEditedCommitMessage} from './CommitInfoView/CommitInfoState';
 import {currentComparisonMode} from './ComparisonView/atoms';
 import {highlightedCommits} from './HighlightedCommits';
 import {InlineBadge} from './InlineBadge';
@@ -33,7 +34,6 @@ import {getAmendToOperation, isAmendToAllowedForCommit} from './operationUtils';
 import {GotoOperation} from './operations/GotoOperation';
 import {HideOperation} from './operations/HideOperation';
 import {RebaseOperation} from './operations/RebaseOperation';
-import platform from './platform';
 import {CommitPreview, uncommittedChangesWithPreviews} from './previews';
 import {RelativeDate} from './relativeDate';
 import {isNarrowCommitTree} from './responsive';
@@ -50,6 +50,7 @@ import {
 import {useConfirmUnsavedEditsBeforeSplit} from './stackEdit/ui/ConfirmUnsavedEditsBeforeSplit';
 import {SplitButton} from './stackEdit/ui/SplitButton';
 import {editingStackIntentionHashes} from './stackEdit/ui/stackEditState';
+import {useToast} from './toast';
 import {succeedableRevset} from './types';
 import {short} from './utils';
 import {VSCodeButton, VSCodeTag} from '@vscode/webview-ui-toolkit/react';
@@ -109,12 +110,13 @@ export const Commit = memo(
     commit,
     previewType,
     hasChildren,
+    bodyOnly = false,
   }: {
-    commit: CommitInfo;
+    commit: DagCommitInfo | CommitInfo;
     previewType?: CommitPreview;
     hasChildren: boolean;
+    bodyOnly?: boolean;
   }) => {
-    const setDrawerState = useSetRecoilState(islDrawerState);
     const isPublic = commit.phase === 'public';
 
     const handlePreviewedOperation = useRunPreviewedOperation();
@@ -132,22 +134,34 @@ export const Commit = memo(
 
     const [title] = useRecoilValue(latestCommitMessage(commit.hash));
 
+    const toast = useToast();
+    const clipboardCopy = (text: string) => toast.copyAndShowToast(text);
+
     const isNonActionable = previewType === CommitPreview.NON_ACTIONABLE_COMMIT;
 
-    function onDoubleClickToShowDrawer() {
-      // Select the commit if it was deselected.
-      if (!isSelected) {
-        overrideSelection([commit.hash]);
-      }
-      // Show the drawer.
-      setDrawerState(state => ({
-        ...state,
-        right: {
-          ...state.right,
-          collapsed: false,
+    const onDoubleClickToShowDrawer = useRecoilCallback(
+      ({set}) =>
+        () => {
+          // Select the commit if it was deselected.
+          if (!isSelected) {
+            overrideSelection([commit.hash]);
+          }
+          // Show the drawer.
+          set(islDrawerState, state => ({
+            ...state,
+            right: {
+              ...state.right,
+              collapsed: false,
+            },
+          }));
+          if (commit.isHead) {
+            // if we happened to be in commit mode, swap to amend mode so you see the details instead
+            set(commitMode, 'amend');
+          }
         },
-      }));
-    }
+      [overrideSelection, isSelected, commit.hash, commit.isHead],
+    );
+
     const setOperationBeingPreviewed = useSetRecoilState(operationBeingPreviewed);
 
     const viewChangesCallback = useRecoilCallback(({set}) => () => {
@@ -174,13 +188,13 @@ export const Commit = memo(
       const items: Array<ContextMenuItem> = [
         {
           label: <T replace={{$hash: short(commit?.hash)}}>Copy Commit Hash "$hash"</T>,
-          onClick: () => platform.clipboardCopy(commit.hash),
+          onClick: () => clipboardCopy(commit.hash),
         },
       ];
       if (!isPublic && commit.diffId != null) {
         items.push({
           label: <T replace={{$number: commit.diffId}}>Copy Diff Number "$number"</T>,
-          onClick: () => platform.clipboardCopy(commit.diffId ?? ''),
+          onClick: () => clipboardCopy(commit.diffId ?? ''),
         });
       }
       if (!isPublic) {
@@ -207,7 +221,7 @@ export const Commit = memo(
         }
       }
       if (!isPublic && !actionsPrevented) {
-        items.push({type: 'divider'});
+        bodyOnly || items.push({type: 'divider'});
         if (isAmendToAllowedForCommit(commit, snapshot)) {
           items.push({
             label: <T>Amend changes to here</T>,
@@ -326,6 +340,14 @@ export const Commit = memo(
       );
     }
 
+    if (bodyOnly && (commit as DagCommitInfo).isYouAreHere) {
+      return (
+        <div className="head-commit-info">
+          <UncommittedChanges place="main" />
+        </div>
+      );
+    }
+
     return (
       <div
         className={
@@ -333,11 +355,12 @@ export const Commit = memo(
           (commit.isHead ? ' head-commit' : '') +
           (commit.successorInfo != null ? ' obsolete' : '') +
           (isHighlighted ? ' highlighted' : '') +
-          (isPublic || hasChildren ? '' : ' topmost')
+          (isPublic || hasChildren || bodyOnly ? '' : ' topmost')
         }
         onContextMenu={contextMenu}
         data-testid={`commit-${commit.hash}`}>
         {!isNonActionable &&
+        !bodyOnly &&
         (commit.isHead || previewType === CommitPreview.GOTO_PREVIOUS_LOCATION) ? (
           <HeadCommitInfo commit={commit} previewType={previewType} hasChildren={hasChildren} />
         ) : null}
@@ -353,7 +376,7 @@ export const Commit = memo(
             draggable={!isPublic && isDraggablePreview(previewType)}
             onClick={onClickToSelect}
             onDoubleClick={onDoubleClickToShowDrawer}>
-            <Avatar username={commit.author} />
+            {bodyOnly || <Avatar username={commit.author} />}
             {isPublic ? null : (
               <span className="commit-title">
                 <span>{title}</span>
@@ -453,7 +476,7 @@ function ConfirmCombineButtons() {
 
 function CommitDate({date}: {date: Date}) {
   return (
-    <span className="commit-date">
+    <span className="commit-date" title={date.toLocaleString()}>
       <RelativeDate date={date} useShortVariant />
     </span>
   );

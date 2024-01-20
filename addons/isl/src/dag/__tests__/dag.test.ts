@@ -182,6 +182,18 @@ describe('Dag', () => {
       expect(dag.isAncestor('a', 'c')).toBe(true);
       expect(dag.isAncestor('c', 'a')).toBe(true);
     });
+
+    it('preserves order for ancestors() or descendants()', () => {
+      // a--b--c
+      const dag = new BaseDag().add([
+        {...info, hash: 'a', parents: []},
+        {...info, hash: 'b', parents: ['a']},
+        {...info, hash: 'c', parents: ['b']},
+      ]);
+      expect(dag.ancestors('c').toArray()).toEqual(['c', 'b', 'a']);
+      expect(dag.ancestors('c').reverse().toArray()).toEqual(['a', 'b', 'c']);
+      expect(dag.descendants('a').toArray()).toEqual(['a', 'b', 'c']);
+    });
   });
 
   describe('sort', () => {
@@ -493,5 +505,55 @@ describe('Dag', () => {
     expect(dag.children('y').toSortedArray()).toEqual([]);
     // w is not a root so it does not need fix.
     expect(dag.children('w').toSortedArray()).toEqual([]);
+  });
+
+  it('renders to ASCII text', () => {
+    // a--b--c
+    //   /    \
+    //  z      d
+    const dag = new Dag().add([
+      {...info, phase: 'public', hash: 'a', parents: []},
+      {...info, phase: 'public', hash: 'z', parents: []},
+      {...info, phase: 'public', hash: 'b', parents: ['a', 'z']},
+      {...info, phase: 'public', hash: 'c', parents: ['b']},
+      {...info, phase: 'draft', hash: 'd', parents: ['c']},
+    ]);
+
+    expect(dag.renderAscii()).toMatchInlineSnapshot(`
+      "
+        o  d
+        │
+      ╭─╯
+      o  c
+      │
+      o    b
+      │
+      ├─╮
+      o │  a
+        │
+        o  z"
+    `);
+
+    // Render a subset.
+    // [a, c] subset: edge is dashed.
+    expect(dag.renderAscii(['a', 'c'])).toMatchInlineSnapshot(`
+      "
+      o  c
+      │
+      :
+      o  a"
+    `);
+    // [b, d] subset: indents "d" (draft), and "b" has an "~".
+    expect(dag.renderAscii(['b', 'd'])).toMatchInlineSnapshot(`
+      "
+        o  d
+        │
+      ╭─╯
+      :
+      o  b
+      │
+      │
+      ~"
+    `);
   });
 });

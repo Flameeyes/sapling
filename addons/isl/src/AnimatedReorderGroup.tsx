@@ -5,11 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import {prefersReducedMotion} from './mediaQuery';
 import deepEqual from 'fast-deep-equal';
 import React, {useRef, useLayoutEffect} from 'react';
 
-type ReorderGroupProps = {
+type ReorderGroupProps = React.HTMLAttributes<HTMLDivElement> & {
   children: React.ReactElement[];
+  animationDuration?: number;
+  animationMinPixel?: number;
 };
 
 type PreviousState = {
@@ -36,19 +39,31 @@ const emptyPreviousState: Readonly<PreviousState> = {
  * This component only handles reordering, if you want drag and drop support or animations
  * on inserted or deleted items, you might want to use other components together.
  */
-export const AnimatedReorderGroup: React.FC<ReorderGroupProps> = ({children, ...props}) => {
+export const AnimatedReorderGroup: React.FC<ReorderGroupProps> = ({
+  children,
+  animationDuration,
+  animationMinPixel,
+  ...props
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const previousStateRef = useRef<Readonly<PreviousState>>(emptyPreviousState);
 
   useLayoutEffect(() => {
-    updatePreviousState(containerRef, previousStateRef, true);
-  }, [children]);
+    const animate = !prefersReducedMotion();
+    updatePreviousState(
+      containerRef,
+      previousStateRef,
+      animate,
+      animationDuration,
+      animationMinPixel,
+    );
+  }, [children, animationDuration, animationMinPixel]);
 
   // Try to get the rects of old children right before rendering new children
   // and calling the LayoutEffect callback. This captures position changes
   // since the last useLayoutEffect. The position changes might be caused by
   // scrolling or resizing the window.
-  updatePreviousState(containerRef, previousStateRef, false);
+  updatePreviousState(containerRef, previousStateRef, false, animationDuration);
 
   return (
     <div {...props} ref={containerRef}>
@@ -70,6 +85,8 @@ function updatePreviousState(
   containerRef: React.RefObject<HTMLDivElement>,
   previousStateRef: React.MutableRefObject<Readonly<PreviousState>>,
   animate = false,
+  animationDuration = 200,
+  animationMinPixel = 5,
 ) {
   const elements = scanElements(containerRef);
   const idList: Array<string> = [];
@@ -87,10 +104,12 @@ function updatePreviousState(
         // Animate from old to the new (current) rect.
         const dx = oldBox.left - newBox.left;
         const dy = oldBox.top - newBox.top;
-        element.animate(
-          [{transform: `translate(${dx}px,${dy}px)`}, {transform: 'translate(0,0)'}],
-          {duration: 200, easing: 'ease-out'},
-        );
+        if (Math.abs(dx) + Math.abs(dy) > animationMinPixel) {
+          element.animate(
+            [{transform: `translate(${dx}px,${dy}px)`}, {transform: 'translate(0,0)'}],
+            {duration: animationDuration, easing: 'ease-out'},
+          );
+        }
       }
     }
     rectMap.set(reorderId, newBox);

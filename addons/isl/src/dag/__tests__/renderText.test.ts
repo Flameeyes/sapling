@@ -280,44 +280,60 @@ export const TEST_TERMINATIONS: TestFixture = {
 
 describe('renderText', () => {
   it('renders TEST_ANCESTORS', () => {
-    expect(render(TEST_ANCESTORS)).toBe(`
+    expect(render(TEST_ANCESTORS)).toMatchInlineSnapshot(`
+      "
         o  Z
         │
         o  Y
+        │
       ╭─╯
       o  F
-      ╷
-      ╷ o  X
-      ╭─╯
+      │
+      :
+      │ o  X
+      │ │
+      ├─╯
       │ o  W
+      │ │
       ├─╯
       o  E
-      ╷
+      │
+      :
       o    D
+      │
       ├─╮
+      │ :
       │ o  C
-      │ ╷
-      o ╷  B
+      │ │
+      │ :
+      o │  B
+      │ │
       ├─╯
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_BASIC', () => {
-    expect(render(TEST_BASIC)).toBe(`
+    expect(render(TEST_BASIC)).toMatchInlineSnapshot(`
+      "
       o  C
       │
       o  B
       │
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_BRANCHES_AND_MERGES', () => {
-    expect(render(TEST_BRANCHES_AND_MERGES)).toBe(`
+    expect(render(TEST_BRANCHES_AND_MERGES)).toMatchInlineSnapshot(`
+      "
       o  W
       │
       o    V
+      │
       ├─╮
       │ o    U
+      │ │
       │ ├─╮
       │ │ o  T
       │ │ │
@@ -326,155 +342,269 @@ describe('renderText', () => {
       o   │  R
       │   │
       o   │  Q
+      │   │
       ├─╮ │
       │ o │    P
+      │ │ │
       │ ├───╮
       │ │ │ o  O
       │ │ │ │
       │ │ │ o    N
+      │ │ │ │
       │ │ │ ├─╮
       │ o │ │ │  M
       │ │ │ │ │
       │ o │ │ │  L
       │ │ │ │ │
       o │ │ │ │  K
+      │ │ │ │ │
       ├───────╯
       o │ │ │  J
       │ │ │ │
       o │ │ │  I
+      │ │ │ │
       ├─╯ │ │
       o   │ │  H
       │   │ │
       o   │ │  G
+      │   │ │
       ├─────╮
       │   │ o  F
+      │   │ │
       │   ├─╯
       │   o  E
       │   │
       o   │  D
       │   │
       o   │  C
+      │   │
       ├───╯
       o  B
       │
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_DIFFERENT_ORDERS1', () => {
-    expect(render(TEST_DIFFERENT_ORDERS1)).toBe(`
+    expect(render(TEST_DIFFERENT_ORDERS1)).toMatchInlineSnapshot(`
+      "
       o    K
+      │
       ├─╮
       │ o    J
+      │ │
       │ ├─╮
       │ │ o    I
+      │ │ │
       │ │ ├─╮
       │ │ │ o    H
+      │ │ │ │
       │ │ │ ├─╮
       │ │ │ │ o    G
+      │ │ │ │ │
       │ │ │ │ ├─╮
       o │ │ │ │ │  F
       │ │ │ │ │ │
       │ o │ │ │ │  E
+      │ │ │ │ │ │
       ├─╯ │ │ │ │
       │   o │ │ │  D
+      │   │ │ │ │
       ├───╯ │ │ │
       │     o │ │  C
+      │     │ │ │
       ├─────╯ │ │
       │       o │  B
+      │       │ │
       ├───────╯ │
       │         o  Z
       │
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_DIFFERENT_ORDERS2', () => {
-    expect(render(TEST_DIFFERENT_ORDERS2)).toBe(`
+    expect(render(TEST_DIFFERENT_ORDERS2)).toMatchInlineSnapshot(`
+      "
       o    K
+      │
       ├─╮
       │ o    J
+      │ │
       │ ├─╮
       │ │ o    I
+      │ │ │
       │ │ ├─╮
       │ │ │ o    H
+      │ │ │ │
       │ │ │ ├─╮
       │ │ │ │ o    G
+      │ │ │ │ │
       │ │ │ │ ├─╮
       │ │ │ │ │ o  Z
       │ │ │ │ │
       │ │ │ │ o  B
       │ │ │ │ │
       │ │ │ o │  C
+      │ │ │ │ │
       │ │ │ ├─╯
       │ │ o │  D
+      │ │ │ │
       │ │ ├─╯
       │ o │  E
+      │ │ │
       │ ├─╯
       o │  F
+      │ │
       ├─╯
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_DIFFERENT_ORDERS3', () => {
-    expect(render(TEST_DIFFERENT_ORDERS3)).toBe(`
+    expect(render(TEST_DIFFERENT_ORDERS3)).toMatchInlineSnapshot(`
+      "
       o    K
+      │
       ├─╮
       │ o  J
       │ │
       o │    F
+      │ │
       ├───╮
       │ │ o  I
+      │ │ │
       │ ├─╯
       o │    E
+      │ │
       ├───╮
       │ │ o  H
+      │ │ │
       │ ├─╯
       o │    D
+      │ │
       ├───╮
       │ │ o  G
+      │ │ │
       │ ├─╯
       o │    C
+      │ │
       ├───╮
       │ │ o  Z
       │ │
       o │  B
+      │ │
       ├─╯
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_DIFFERENT_ORDERS4', () => {
-    expect(render(TEST_DIFFERENT_ORDERS4)).toBe(`
+    expect(render(TEST_DIFFERENT_ORDERS4)).toMatchInlineSnapshot(`
+      "
       o    K
+      │
       ├─╮
       o │  F
       │ │
       │ o    J
+      │ │
       │ ├─╮
       │ o │  E
+      │ │ │
       ├─╯ │
       │   o  I
+      │   │
       │ ╭─┤
       │ │ o  D
+      │ │ │
       ├───╯
       │ o    H
+      │ │
       │ ├─╮
       │ o │  C
+      │ │ │
       ├─╯ │
       │   o  G
+      │   │
       │ ╭─┤
       │ o │  Z
       │   │
       │   o  B
+      │   │
       ├───╯
-      o  A`);
+      o  A"
+    `);
+    expect(render(TEST_DIFFERENT_ORDERS4, true)).toMatchInlineSnapshot(`
+      "
+      o    K
+      │    # top pad
+      ├─╮  # link line
+      │ │  # pad line
+      --------------------
+      o    F
+      │    # top pad
+      │    # pad line
+      --------------------
+        o    J
+        │    # top pad
+        ├─╮  # link line
+        │ │  # pad line
+      --------------------
+        o    E
+        │    # top pad
+      ╭─╯    # link line
+      │      # pad line
+      --------------------
+          o  I
+          │  # top pad
+        ╭─┤  # link line
+        │ │  # pad line
+      --------------------
+          o  D
+          │  # top pad
+      ╭───╯  # link line
+      │      # pad line
+      --------------------
+        o    H
+        │    # top pad
+        ├─╮  # link line
+        │ │  # pad line
+      --------------------
+        o    C
+        │    # top pad
+      ╭─╯    # link line
+      │      # pad line
+      --------------------
+          o  G
+          │  # top pad
+        ╭─┤  # link line
+        │ │  # pad line
+      --------------------
+        o    Z
+             # top pad
+             # pad line
+      --------------------
+          o  B
+          │  # top pad
+      ╭───╯  # link line
+      │      # pad line
+      --------------------
+      o  A
+         # top pad
+         # pad line
+      --------------------"
+    `);
   });
 
   it('renders TEST_LONG_MESSAGES', () => {
-    expect(render(TEST_LONG_MESSAGES)).toBe(`
+    expect(render(TEST_LONG_MESSAGES)).toMatchInlineSnapshot(`
+      "
       o      F
-      ├─┬─╮  very long message 1
-      │ │ │  very long message 2
-      │ │ ~  very long message 3
-      │ │
+      │      very long message 1
+      ├─┬─╮  very long message 2
+      │ │ │  very long message 3
+      │ │ ~
       │ │    very long message 4
       │ │    very long message 5
       │ │    very long message 6
@@ -484,54 +614,68 @@ describe('renderText', () => {
       │ o  D
       │ │
       o │  C
-      ├─╯  long message 1
-      │    long message 2
+      │ │  long message 1
+      ├─╯  long message 2
       │    long message 3
       │
       o  B
       │
       o  A
       │  long message 1
-      ~  long message 2
-         long message 3`);
+      │  long message 2
+      ~  long message 3"
+    `);
   });
 
   it('renders TEST_OCTOPUS_BRANCH_AND_MERGE', () => {
-    expect(render(TEST_OCTOPUS_BRANCH_AND_MERGE)).toBe(`
+    expect(render(TEST_OCTOPUS_BRANCH_AND_MERGE)).toMatchInlineSnapshot(`
+      "
       o      J
+      │
       ├─┬─╮
       │ │ o  I
       │ │ │
       │ o │      H
+      │ │ │
       ╭─┼─┬─┬─╮
       │ │ │ │ o  G
       │ │ │ │ │
       │ │ │ o │  E
+      │ │ │ │ │
       │ │ │ ├─╯
       │ │ o │  D
+      │ │ │ │
       │ │ ├─╮
       │ o │ │  C
+      │ │ │ │
       │ ├───╯
       o │ │  F
+      │ │ │
       ├─╯ │
       o   │  B
+      │   │
       ├───╯
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_RESERVED_COLUMN', () => {
-    expect(render(TEST_RESERVED_COLUMN)).toBe(`
+    expect(render(TEST_RESERVED_COLUMN)).toMatchInlineSnapshot(`
+      "
         o  Z
         │
         o  Y
         │
         o  X
+        │
       ╭─╯
       │ o  W
+      │ │
       ├─╯
       o  G
       │
       o    F
+      │
       ├─╮
       │ o  E
       │ │
@@ -541,29 +685,67 @@ describe('renderText', () => {
       │
       o  B
       │
-      o  A`);
+      o  A"
+    `);
   });
 
   it('renders TEST_SPLIT_PARENTS', () => {
-    expect(render(TEST_SPLIT_PARENTS)).toBe(`
+    expect(render(TEST_SPLIT_PARENTS)).toMatchInlineSnapshot(`
+      "
             o  E
+            │
       ╭─┬─┬─┤
-      ╷ o │ ╷  D
-      ╭─┴─╮ ╷
-      │   o ╷  C
+      : │ │ :
+      │ o │ │  D
+      │ │ │ │
+      ╭─┴─╮ │
+      │   o │  C
+      │   │ │
       │   ├─╯
       o   │  B
+      │   │
       ├───╯
-      o  A`);
+      o  A"
+    `);
+    expect(render(TEST_SPLIT_PARENTS, true)).toMatchInlineSnapshot(`
+      "
+            o  E
+            │  # top pad
+      ╭─┬─┬─┤  # link line
+      : │ │ :  # pad line
+      --------------------
+        o      D
+        │      # top pad
+      ╭─┴─╮    # link line
+      │   │    # pad line
+      --------------------
+          o    C
+          │    # top pad
+          │    # link line
+          │    # pad line
+      --------------------
+      o      B
+      │      # top pad
+      │      # link line
+      │      # pad line
+      --------------------
+      o  A
+         # top pad
+         # pad line
+      --------------------"
+    `);
   });
 
   it('renders TEST_TERMINATIONS', () => {
-    expect(render(TEST_TERMINATIONS)).toBe(`
+    expect(render(TEST_TERMINATIONS)).toMatchInlineSnapshot(`
+      "
         o  K
         │
         │ o  J
+        │ │
         ├─╯
         o    I
+        │
       ╭─┼─╮
       │ │ │
       │ ~ │
@@ -571,8 +753,10 @@ describe('renderText', () => {
       o   │  E
       │   │
       │   o  H
+      │   │
       ├───╯
       o  D
+      │
       │
       ~
 
@@ -580,13 +764,15 @@ describe('renderText', () => {
       │
       o  B
       │
-      ~`);
+      │
+      ~"
+    `);
   });
 });
 
-function render(fixture: TestFixture): string {
+function render(fixture: TestFixture, debugLinkLineFromNode = false): string {
   const {rows, reserve} = fixture;
-  const renderer = new TextRenderer();
+  const renderer = new TextRenderer({debugLinkLineFromNode});
   if (reserve != null) {
     for (const h of reserve) {
       renderer.reserve(h);
@@ -605,7 +791,5 @@ function render(fixture: TestFixture): string {
     });
     return renderer.nextRow(hash, ancestors, message.trimEnd() + '\n');
   });
-  const lines = rendered.join('').split('\n');
-  const indended = lines.map(line => (line.length > 0 ? '      ' + line : ''));
-  return '\n' + indended.join('\n').trimEnd();
+  return '\n' + rendered.join('').trimEnd();
 }

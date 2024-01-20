@@ -806,11 +806,98 @@ where
             client_parents.into_iter().collect::<Result<Vec<Id>>>()?;
         }
 
-        // Prepare states used below.
-        let mut prepared_client_segments = PreparedFlatSegments::default();
-        let server_idmap = &clone_data.idmap;
-        let server_idmap_by_name: BTreeMap<&VertexName, Id> =
-            server_idmap.iter().map(|(&id, name)| (name, id)).collect();
+        // Prepare indexes and states used below.
+        /// Query server segments with some indexes.
+        struct ServerState<'a> {
+            seg_by_high: BTreeMap<Id, FlatSegment>,
+            idmap_by_name: BTreeMap<&'a VertexName, Id>,
+            idmap_by_id: &'a BTreeMap<Id, VertexName>,
+        }
+        let mut server = ServerState {
+            seg_by_high: clone_data
+                .flat_segments
+                .segments
+                .iter()
+                .map(|s| (s.high, s.clone()))
+                .collect(),
+            idmap_by_name: clone_data
+                .idmap
+                .iter()
+                .map(|(&id, name)| (name, id))
+                .collect(),
+            idmap_by_id: &clone_data.idmap,
+        };
+
+        impl<'a> ServerState<'a> {
+            /// Find the segment that contains the (server-side) Id.
+            fn seg_containing_id(&self, server_id: Id) -> Result<&FlatSegment> {
+                let seg = match self.seg_by_high.range(server_id..).next() {
+                    Some((_high, seg)) => {
+                        if seg.low <= server_id && seg.high >= server_id {
+                            Some(seg)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+                seg.ok_or_else(|| {
+                    DagError::Programming(format!(
+                        "server does not provide segment covering id {}",
+                        server_id
+                    ))
+                })
+            }
+
+            /// Split a server segment from `[ low --  middle -- high ]` to
+            /// `[ low -- middle ] [ middle + 1 -- high ]`.
+            fn split_seg(&mut self, high: Id, middle: Id) {
+                // This is useful when "middle" is a "parent" of another segment, like:
+                //    seg 1 (server): 100 -- 115 -- 120
+                //    seg 2 (server):                    121 -- 130, parents: [115]
+                // While the task is to ensure seg 2's head H is present, we can split seg 1:
+                //    seg 1a (server): 110 -- 115
+                //    seg 1b (server):            116 -- 120, parents: [115]
+                //    seg 2  (server):                       121 -- 130 (H), parents: [115]
+                // Then remap and insert seg 1a and seg 2 first to complete the "H" goal:
+                //    seg 1a (client): 10 -- 15
+                //    seg 2  (client):          16 -- 20 (H), parents: [15]
+                // The 10 ... 20 range is now continuous and friendly to merge to high-level
+                // segments. The rest of seg 1, seg 1b (server) can be picked up later when
+                // visiting from other heads.
+                let seg = self
+                    .seg_by_high
+                    .remove(&high)
+                    .expect("bug: invalid high passed to split_seg");
+                assert!(seg.low <= middle);
+                assert!(seg.high > middle);
+                assert!(self.idmap_by_id.contains_key(&middle));
+                let seg1 = FlatSegment {
+                    low: seg.low,
+                    high: middle,
+                    parents: seg.parents,
+                };
+                let seg2 = FlatSegment {
+                    low: middle + 1,
+                    high: seg.high,
+                    parents: vec![middle],
+                };
+                self.seg_by_high.insert(seg1.high, seg1);
+                self.seg_by_high.insert(seg2.high, seg2);
+            }
+
+            fn name_by_id(&self, id: Id) -> VertexName {
+                self.idmap_by_id
+                    .get(&id)
+                    .expect("IdMap should contain the `id`. It should be checked before.")
+                    .clone()
+            }
+
+            fn id_by_name(&self, name: &VertexName) -> Option<Id> {
+                self.idmap_by_name.get(name).copied()
+            }
+        }
+
         // `taken` is the union of `covered` and `reserved`, mainly used by `find_free_span`.
         let mut taken = {
             // Normally we would want `calculate_initial_reserved` here. But we calculate head
@@ -821,31 +908,8 @@ where
             new.dag().all_ids_in_groups(&[Group::MASTER])?
         };
 
-        // Index used by lookups.
-        let server_seg_by_high: BTreeMap<Id, &FlatSegment> = clone_data
-            .flat_segments
-            .segments
-            .iter()
-            .map(|s| (s.high, s))
-            .collect();
-        let find_server_seg_contains_server_id = |server_id: Id| -> Result<&FlatSegment> {
-            let seg = match server_seg_by_high.range(server_id..).next() {
-                Some((_high, &seg)) => {
-                    if seg.low <= server_id && seg.high >= server_id {
-                        Some(seg)
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            };
-            seg.ok_or_else(|| {
-                DagError::Programming(format!(
-                    "server does not provide segment covering id {}",
-                    server_id
-                ))
-            })
-        };
+        // Output. Remapped segments to insert.
+        let mut prepared_client_segments = PreparedFlatSegments::default();
 
         // Insert segments by visiting the heads following the `VertexOptions` order.
         //
@@ -863,14 +927,22 @@ where
         //
         // Only the MASTER group supports laziness. So we only care about it.
         for (head, opts) in heads.vertex_options() {
-            let mut stack: Vec<&FlatSegment> = vec![];
-            if let Some(&head_server_id) = server_idmap_by_name.get(&head) {
-                let head_server_seg = find_server_seg_contains_server_id(head_server_id)?;
-                stack.push(head_server_seg);
+            let mut stack: Vec<Id> = vec![];
+            if let Some(head_server_id) = server.id_by_name(&head) {
+                let _head_server_seg = server.seg_containing_id(head_server_id)?;
+                stack.push(head_server_id);
             }
 
-            while let Some(server_seg) = stack.pop() {
-                let high_vertex = server_idmap[&server_seg.high].clone();
+            while let Some(server_high) = stack.pop() {
+                let mut server_seg = server.seg_containing_id(server_high)?;
+                if server_high < server_seg.high {
+                    // Split the segment for more efficient high level segments.
+                    let seg_high = server_seg.high;
+                    server.split_seg(seg_high, server_high);
+                    server_seg = server.seg_containing_id(server_high)?;
+                    assert_eq!(server_high, server_seg.high);
+                }
+                let high_vertex = server.name_by_id(server_high);
                 let client_high_id = new
                     .map
                     .vertex_id_with_max_group(&high_vertex, Group::NON_MASTER)
@@ -896,7 +968,7 @@ where
 
                 let parent_server_ids = &server_seg.parents;
                 let parent_names: Vec<VertexName> = {
-                    let iter = parent_server_ids.iter().map(|id| server_idmap[id].clone());
+                    let iter = parent_server_ids.iter().map(|id| server.name_by_id(*id));
                     iter.collect()
                 };
 
@@ -930,12 +1002,11 @@ where
 
                 if !missng_parent_server_ids.is_empty() {
                     // Parents are not ready. Needs revisit this segment after inserting parents.
-                    stack.push(server_seg);
+                    stack.push(server_high);
                     // Insert missing parents.
                     // First parent, first insertion.
                     for &server_id in missng_parent_server_ids.iter().rev() {
-                        let parent_server_seg = find_server_seg_contains_server_id(server_id)?;
-                        stack.push(parent_server_seg);
+                        stack.push(server_id);
                     }
                     continue;
                 }
@@ -951,7 +1022,8 @@ where
 
                 // Map the server_seg.low..=server_seg.high to client span.low..=span.high.
                 // Insert to IdMap.
-                for (&server_id, name) in server_idmap.range(server_seg.low..=server_seg.high) {
+                for (&server_id, name) in server.idmap_by_id.range(server_seg.low..=server_seg.high)
+                {
                     let client_id = server_id + span.low.0 - server_seg.low.0;
                     if client_id.group() != Group::MASTER {
                         return Err(crate::Error::IdOverflow(Group::MASTER));
@@ -2438,12 +2510,26 @@ fn update_reserved(reserved: &mut IdSet, covered: &IdSet, low: Id, reserve_size:
 /// `reserve_size` cannot be 0.
 fn find_free_span(covered: &IdSet, low: Id, reserve_size: u64, shrink_to_fit: bool) -> IdSpan {
     assert!(reserve_size > 0);
+    let original_low = low;
     let mut low = low;
     let mut high;
+    let mut count = 0;
     loop {
+        count += 1;
+        // First, bump 'low' to not overlap with a conflicted `span`.
+        //   [----covered_span----]
+        //      ^                  ^
+        //      original_low       bump to here
+        if let Some(span) = covered.span_contains(low) {
+            low = span.high + 1;
+        }
         high = (low + reserve_size - 1).min(low.group().max_id());
+        if reserve_size <= 1 && !covered.contains(low) {
+            // No need to go through complex (maybe O(N)) logic below.
+            break;
+        }
         // Try to reserve id..=id+reserve_size-1
-        let reserved = IdSet::from_spans(vec![low..=high]);
+        let reserved = IdSet::from_single_span(IdSpan::new(low, high));
         let intersected = reserved.intersection(covered);
         if let Some(span) = intersected.iter_span_asc().next() {
             // Overlap with existing covered spans. Decrease `high` so it
@@ -2475,6 +2561,16 @@ fn find_free_span(covered: &IdSet, low: Id, reserve_size: u64, shrink_to_fit: bo
             }
         }
         break;
+    }
+    if count >= 4096 {
+        tracing::warn!(
+            target: "dag::perf",
+            count=count,
+            low=?original_low,
+            reserve_size=reserve_size,
+            covered=?covered,
+            "PERF: find_free_span took too long",
+        );
     }
     let span = IdSpan::new(low, high);
     if !shrink_to_fit {

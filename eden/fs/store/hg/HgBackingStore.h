@@ -24,7 +24,6 @@
 
 namespace facebook::eden {
 
-class HgImporter;
 struct ImporterOptions;
 class EdenStats;
 class LocalStore;
@@ -61,7 +60,6 @@ class HgBackingStore {
    */
   HgBackingStore(
       AbsolutePathPiece repository,
-      HgImporter* importer,
       std::shared_ptr<ReloadableConfig> config,
       std::shared_ptr<LocalStore> localStore,
       EdenStatsPtr,
@@ -161,17 +159,11 @@ class HgBackingStore {
       ObjectId edenTreeID,
       RelativePath path,
       std::shared_ptr<LocalStore::WriteBatch> writeBatch);
-  TreePtr processTree(
-      std::unique_ptr<folly::IOBuf> content,
-      const Hash20& manifestNode,
-      const ObjectId& edenTreeID,
-      RelativePathPiece path,
-      LocalStore::WriteBatch* writeBatch);
 
   std::shared_ptr<LocalStore> localStore_;
   EdenStatsPtr stats_;
-  // A set of threads owning HgImporter instances
-  std::unique_ptr<folly::Executor> importThreadPool_;
+  // A set of threads processing Sapling retry requests.
+  std::unique_ptr<folly::Executor> retryThreadPool_;
   std::shared_ptr<ReloadableConfig> config_;
   // The main server thread pool; we push the Futures back into
   // this pool to run their completion code to avoid clogging

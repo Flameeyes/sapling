@@ -59,7 +59,7 @@ function storeCachedAvatars(avatars: Map<string, string>) {
 
 const avatars = selector<Map<string, string>>({
   key: 'avatars',
-  get: async ({get}) => {
+  get: ({get}) => {
     const authors = get(uniqueAuthors);
 
     const found = getCachedAvatars(authors);
@@ -71,11 +71,14 @@ const avatars = selector<Map<string, string>>({
       type: 'fetchAvatars',
       authors,
     });
-    const result = await serverAPI.nextMessageMatching('fetchedAvatars', () => true);
 
-    storeCachedAvatars(result.avatars);
+    return (async () => {
+      const result = await serverAPI.nextMessageMatching('fetchedAvatars', () => true);
 
-    return result.avatars;
+      storeCachedAvatars(result.avatars);
+
+      return result.avatars;
+    })();
   },
 });
 
@@ -89,5 +92,35 @@ export function Avatar({username}: {username: string}) {
         <img src={img} width={14} height={14} alt={t("$user's avatar photo")} />
       )}
     </div>
+  );
+}
+
+/** Render as a SVG pattern */
+export function AvatarPattern({
+  username,
+  size,
+  id,
+  fallbackFill,
+}: {
+  username: string;
+  size: number;
+  id: string;
+  fallbackFill: string;
+}) {
+  const storage = useRecoilValueLoadable(avatars);
+  const img = storage.valueMaybe()?.get(username);
+  return (
+    <defs>
+      <pattern
+        id={id}
+        patternUnits="userSpaceOnUse"
+        width={size}
+        height={size}
+        x={-size / 2}
+        y={-size / 2}>
+        <rect width={size} height={size} fill={fallbackFill} strokeWidth={0} />
+        <image href={img} width={size} height={size} />
+      </pattern>
+    </defs>
   );
 }

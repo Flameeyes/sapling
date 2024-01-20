@@ -995,11 +995,13 @@ class EdenConfig : private ConfigSettingManager {
   /**
    * Controls whether EdenFS symlinks are enabled on Windows.
    *
-   * On Windows this is on by default but can be disabled via this setting.
+   * Currently this is disabled because of a Windows bug. Directories with
+   * long symlinks become un-list-able.
+   * https://fb.workplace.com/groups/edenfswindows/permalink/1427359391513268/
    */
   ConfigSetting<bool> windowsSymlinksEnabled{
-      "experimental:windows-symlinks-enabled",
-      folly::kIsWindows,
+      "experimental:windows-symlinks",
+      false,
       this};
 
   // [blobcache]
@@ -1329,6 +1331,13 @@ class EdenConfig : private ConfigSettingManager {
       "doctor:vscode-extensions-author-allow-list",
       {},
       this};
+
+  // [rage]
+  /**
+   * The tool that will be used to upload eden rages. Only currently used in the
+   * CLI.
+   */
+  ConfigSetting<std::string> rageReporter{"rage:reporter", "", this};
 
   // [hash]
   /**

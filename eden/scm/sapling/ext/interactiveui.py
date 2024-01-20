@@ -12,8 +12,8 @@ import sys
 from enum import Enum
 from typing import Union
 
-from sapling import error, pycompat, scmutil
-from sapling.i18n import _
+from sapling import error, pycompat, scmutil, util
+from sapling.i18n import _, _x
 
 
 if not pycompat.iswindows:
@@ -21,9 +21,12 @@ if not pycompat.iswindows:
     import tty
 
 
-def clearscreen():
-    sys.stdout.write("\033[2J")  # clear screen
-    sys.stdout.write("\033[;H")  # move cursor
+def clearscreen(out):
+    if util.istest():
+        out.write(_x("===== Screen Refresh =====\n"))
+    else:
+        out.write(_x("\033[2J"))  # clear screen
+        out.write(_x("\033[;H"))  # move cursor
 
 
 # From:
@@ -71,7 +74,8 @@ def clearscreen():
 # Note: some changes have been made from the source code
 
 
-def getchar(fd: int) -> Union[None, bytes, str]:
+def getchar() -> Union[None, bytes, str]:
+    fd = sys.stdin.fileno()
     if not os.isatty(fd):
         # TODO: figure out tests
         return None
@@ -87,11 +91,8 @@ def getchar(fd: int) -> Union[None, bytes, str]:
         if ch is None:
             ch = ""
     # pyre-fixme[61]: `ch` is undefined, or not always defined.
-    if ch == "\x03":
-        raise KeyboardInterrupt()
-    # pyre-fixme[61]: `ch` is undefined, or not always defined.
-    if ch == "\x04":
-        raise EOFError()
+    if ch == b"\x03" or ch == b"\x04":
+        return None
     # pyre-fixme[61]: `ch` is undefined, or not always defined.
     return ch
 
@@ -112,6 +113,8 @@ class viewframe:
     KEY_R = b"r"
     KEY_S = b"s"
     KEY_RETURN = b"\r"
+    KEY_UP = b"\x1b[A"
+    KEY_DOWN = b"\x1b[B"
     KEY_RIGHT = b"\x1b[C"
     KEY_LEFT = b"\x1b[D"
 
@@ -119,6 +122,7 @@ class viewframe:
     def __init__(self, ui, repo):
         self.ui = ui
         self.repo = repo
+        self.status = ""
         self._active = True
         ui.disablepager()
         repo.ui.disablepager()
@@ -139,44 +143,55 @@ class viewframe:
 
 def _write_output(viewobj):
     screensize = scmutil.termsize(viewobj.ui)[1]
-    clearscreen()
-    slist, alignment = viewobj.render()
-    if alignment is not None and len(slist) > screensize:
+    statuslines = viewobj.status.splitlines()
+    statussize = len(statuslines)
+    logsize = screensize - statussize
+    clearscreen(viewobj.ui)
+    lines, alignment = viewobj.render()
+    if alignment is not None and len(lines) > logsize:
         index, direction = alignment
         if direction == Alignment.top:
-            end = min(len(slist), index + screensize)
-            start = min(index, end - screensize)
+            end = min(len(lines), index + logsize)
+            start = min(index, end - logsize)
         elif direction == Alignment.bottom:
-            start = max(0, index - screensize)
-            end = max(index, start + screensize)
-        slist = slist[start:end]
+            start = max(0, index - logsize)
+            end = max(index, start + logsize)
+        lines = lines[start:end]
 
-    sys.stdout.write("\n".join("\r" + line for line in slist))
-    sys.stdout.flush()
+    lines += statuslines
+    if util.istest():
+        viewobj.ui.write("\n".join(lines))
+    else:
+        viewobj.ui.write("\n".join("\r" + line for line in lines))
+    viewobj.ui.flush()
 
 
-def view(viewobj) -> None:
+def view(viewobj, readinput=getchar) -> None:
     if pycompat.iswindows:
         raise error.Abort(_("interactive UI does not support Windows"))
     if viewobj.ui.pageractive:
         raise error.Abort(_("interactiveui doesn't work with pager"))
     # Enter alternate screen
     # TODO: Investigate portability - may only work for xterm
-    sys.stdout.write("\033[?1049h\033[H")
-    # disable line wrapping
-    # this is from curses.tigetstr('rmam')
-    sys.stdout.write("\x1b[?7l")
-    sys.stdout.write("\033[?25l")  # hide cursor
+    if not util.istest():
+        viewobj.ui.write(_x("\033[?1049h\033[H"))
+        # disable line wrapping
+        # this is from curses.tigetstr('rmam')
+        viewobj.ui.write(_x("\x1b[?7l"))
+        viewobj.ui.write(_x("\033[?25l"))  # hide cursor
     try:
         while viewobj._active:
             _write_output(viewobj)
-            output = getchar(sys.stdin.fileno())
+            output = readinput()
+            if output is None:
+                break
             viewobj.handlekeypress(output)
     finally:
-        sys.stdout.write("\033[?25h")  # show cursor
-        # re-enable line wrapping
-        # this is from curses.tigetstr('smam')
-        sys.stdout.write("\x1b[?7h")
-        sys.stdout.flush()
-        # Exit alternate screen
-        sys.stdout.write("\033[?1049l")
+        if not util.istest():
+            viewobj.ui.write(_x("\033[?25h"))  # show cursor
+            # re-enable line wrapping
+            # this is from curses.tigetstr('smam')
+            viewobj.ui.write(_x("\x1b[?7h"))
+            viewobj.ui.flush()
+            # Exit alternate screen
+            viewobj.ui.write(_x("\033[?1049l"))

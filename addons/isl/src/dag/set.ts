@@ -8,7 +8,7 @@
 import type {Hash} from '../types';
 import type {List, Seq} from 'immutable';
 
-import {Set as ImSet} from 'immutable';
+import {OrderedSet as ImSet} from 'immutable';
 import {SelfUpdate} from 'shared/immutableExt';
 
 /**
@@ -27,6 +27,8 @@ export class HashSet extends SelfUpdate<ImSet<Hash>> {
       return hashes;
     } else if (typeof hashes === 'string') {
       return new HashSet(ImSet([hashes]));
+    } else if (ImSet.isOrderedSet(hashes)) {
+      return new HashSet(hashes as ImSet<Hash>);
     } else {
       return new HashSet(ImSet(hashes));
     }
@@ -71,6 +73,11 @@ export class HashSet extends SelfUpdate<ImSet<Hash>> {
     return this.set.has(hash);
   }
 
+  /** Reverse the order of the set. */
+  reverse(): HashSet {
+    return new HashSet(this.inner.reverse());
+  }
+
   /** Convert to sorted array. Mainly for testing. */
   toSortedArray(): Array<Hash> {
     return this.set.toArray().sort();
@@ -90,4 +97,4 @@ export class HashSet extends SelfUpdate<ImSet<Hash>> {
 }
 
 /** A convenient type that converts to HashSet. `null` converts to an empty set. */
-export type SetLike = HashSet | Iterable<Hash> | Hash | null | undefined;
+export type SetLike = HashSet | ImSet<Hash> | Iterable<Hash> | Hash | null | undefined;
